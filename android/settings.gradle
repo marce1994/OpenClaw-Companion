@@ -1,0 +1,4 @@
+rootProject.name = 'OpenClawCompanion'
+include ':app'
+include ':live2d_framework'
+project(':live2d_framework').projectDir = new File(rootDir, 'live2d/Framework/framework')

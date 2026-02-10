@@ -1,0 +1,16 @@
+# Android build artifacts
+android/app/build/
+android/build/
+android/.gradle/
+android/live2d/Framework/framework/build/
+android/local.properties
+
+# Server dependencies
+server/node_modules/
+
+# Binaries
+*.apk
+*.keystore
+
+# Environment (keep .env.example)
+.env

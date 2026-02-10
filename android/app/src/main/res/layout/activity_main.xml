@@ -1,0 +1,502 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF0D1117">
+
+    <!-- Connection dot - top right -->
+    <View
+        android:id="@+id/connectionDot"
+        android:layout_width="10dp"
+        android:layout_height="10dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="40dp"
+        android:layout_marginEnd="20dp"
+        android:background="@drawable/circle_button" />
+
+    <!-- ===== ORB MODE LAYOUT ===== -->
+    <LinearLayout
+        android:id="@+id/orbModeLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <FrameLayout
+            android:layout_width="240dp"
+            android:layout_height="240dp">
+
+            <com.openclaw.companion.OrbView
+                android:id="@+id/orbView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <ImageButton
+                android:id="@+id/btnCancelProcess"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="top|end"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:background="@android:color/transparent"
+                android:contentDescription="Cancel"
+                android:visibility="gone"
+                android:alpha="0.8" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/txtStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/status_connecting"
+            android:textSize="16sp"
+            android:textColor="#88AAAAAA"
+            android:layout_marginTop="24dp"
+            android:fontFamily="sans-serif-light" />
+
+        <TextView
+            android:id="@+id/txtSwipeCancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="← Deslizá para cancelar"
+            android:textSize="13sp"
+            android:textColor="#66AAAAAA"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/chatRecyclerView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="8dp"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:clipToPadding="false"
+            android:paddingBottom="8dp" />
+
+        <!-- Hidden fallback TextViews -->
+        <TextView
+            android:id="@+id/txtTranscript"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:visibility="gone"
+            android:textSize="14sp"
+            android:textColor="#66AAAAAA"
+            android:gravity="center" />
+
+        <TextView
+            android:id="@+id/txtReply"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:visibility="gone"
+            android:textSize="15sp"
+            android:textColor="#CCFFFFFF"
+            android:gravity="center" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:paddingBottom="32dp"
+            android:paddingTop="16dp">
+
+            <ImageButton
+                android:id="@+id/btnKeyboard"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@android:drawable/ic_dialog_email"
+                android:background="@android:color/transparent"
+                android:scaleType="centerInside"
+                android:contentDescription="Keyboard"
+                android:layout_marginEnd="32dp"
+                android:alpha="0.5" />
+
+            <ImageButton
+                android:id="@+id/btnTalk"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:src="@android:drawable/ic_btn_speak_now"
+                android:background="@drawable/mic_button_bg"
+                android:scaleType="centerInside"
+                android:contentDescription="@string/btn_talk" />
+
+            <ImageButton
+                android:id="@+id/btnSettings"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@android:drawable/ic_menu_preferences"
+                android:background="@android:color/transparent"
+                android:scaleType="centerInside"
+                android:contentDescription="@string/btn_settings"
+                android:layout_marginStart="32dp"
+                android:alpha="0.5" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===== LIVE2D IMMERSIVE MODE ===== -->
+    <FrameLayout
+        android:id="@+id/live2dModeLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:background="#FF060A1F">
+
+        <!-- Video background loop (behind transparent GL surface) -->
+        <VideoView
+            android:id="@+id/videoBackground"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center" />
+
+        <!-- Full-screen Live2D model (transparent GL overlay on video) -->
+        <com.openclaw.companion.live2d.Live2DView
+            android:id="@+id/live2dView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Cancel processing button - top right -->
+        <ImageButton
+            android:id="@+id/btnCancelProcessL2d"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="44dp"
+            android:layout_marginEnd="20dp"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:background="@android:color/transparent"
+            android:contentDescription="Cancel"
+            android:visibility="gone"
+            android:alpha="0.8" />
+
+        <!-- Bottom overlay panel: gradient fade + transcript + controls -->
+        <LinearLayout
+            android:id="@+id/live2dBottomOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:paddingBottom="24dp"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:background="@drawable/live2d_bottom_gradient">
+
+            <!-- Status -->
+            <TextView
+                android:id="@+id/txtStatusL2d"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="14sp"
+                android:textColor="#CCCCCCCC"
+                android:layout_marginTop="32dp"
+                android:fontFamily="sans-serif-light" />
+
+            <!-- Swipe to cancel (Live2D) -->
+            <TextView
+                android:id="@+id/txtSwipeCancelL2d"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="← Deslizá para cancelar"
+                android:textSize="13sp"
+                android:textColor="#66AAAAAA"
+                android:layout_marginTop="4dp"
+                android:visibility="gone" />
+
+            <!-- Transcript (user said) -->
+            <TextView
+                android:id="@+id/txtTranscriptL2d"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="14sp"
+                android:textColor="#AADDDDDD"
+                android:shadowColor="#FF000000"
+                android:shadowDx="1"
+                android:shadowDy="1"
+                android:shadowRadius="3"
+                android:gravity="center"
+                android:layout_marginTop="8dp"
+                android:maxLines="2"
+                android:ellipsize="end" />
+
+            <!-- Reply (bot said) -->
+            <TextView
+                android:id="@+id/txtReplyL2d"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="16sp"
+                android:textColor="#FFFFFFFF"
+                android:shadowColor="#FF000000"
+                android:shadowDx="1"
+                android:shadowDy="1"
+                android:shadowRadius="4"
+                android:gravity="center"
+                android:layout_marginTop="4dp"
+                android:maxLines="4"
+                android:ellipsize="end" />
+
+            <!-- Controls row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginTop="16dp">
+
+                <ImageButton
+                    android:id="@+id/btnKeyboardL2d"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:src="@android:drawable/ic_dialog_email"
+                    android:background="@android:color/transparent"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Keyboard"
+                    android:layout_marginEnd="32dp"
+                    android:alpha="0.4" />
+
+                <ImageButton
+                    android:id="@+id/btnTalkL2d"
+                    android:layout_width="72dp"
+                    android:layout_height="72dp"
+                    android:src="@android:drawable/ic_btn_speak_now"
+                    android:background="@drawable/mic_button_bg"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/btn_talk" />
+
+                <ImageButton
+                    android:id="@+id/btnSettingsL2d"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:src="@android:drawable/ic_menu_preferences"
+                    android:background="@android:color/transparent"
+                    android:scaleType="centerInside"
+                    android:contentDescription="@string/btn_settings"
+                    android:layout_marginStart="32dp"
+                    android:alpha="0.4" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Text input bar overlay (shared between orb and Live2D modes) -->
+    <LinearLayout
+        android:id="@+id/textInputBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        android:background="#DD0D1117"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="24dp"
+        android:elevation="8dp">
+
+        <!-- Attachment button -->
+        <ImageButton
+            android:id="@+id/btnAttach"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:src="@android:drawable/ic_menu_add"
+            android:background="@android:color/transparent"
+            android:scaleType="centerInside"
+            android:contentDescription="Attach"
+            android:alpha="0.6" />
+
+        <!-- Switch back to voice mode -->
+        <ImageButton
+            android:id="@+id/btnTextToVoice"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:src="@android:drawable/ic_btn_speak_now"
+            android:background="@android:color/transparent"
+            android:scaleType="centerInside"
+            android:contentDescription="Voice mode"
+            android:alpha="0.6" />
+
+        <EditText
+            android:id="@+id/edtMessage"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:hint="Escribí un mensaje…"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#555555"
+            android:textSize="15sp"
+            android:background="@drawable/text_input_bg"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:inputType="text"
+            android:imeOptions="actionSend"
+            android:singleLine="true"
+            android:maxLines="1" />
+
+        <ImageButton
+            android:id="@+id/btnSendText"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:src="@drawable/ic_chat_send"
+            android:background="@android:color/transparent"
+            android:scaleType="centerInside"
+            android:contentDescription="Send"
+            android:alpha="0.8" />
+    </LinearLayout>
+
+    <!-- Settings panel overlay -->
+    <ScrollView
+        android:id="@+id/settingsPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:background="#EE0D1117"
+        android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:gravity="center">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⚙️ Settings"
+            android:textSize="24sp"
+            android:textColor="#FFFFFF"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_server_url"
+            android:textColor="#88AAAAAA"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/edtServer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_server_url"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#555555"
+            android:inputType="textUri"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_auth_token"
+            android:textColor="#88AAAAAA"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/edtToken"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_auth_token"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#555555"
+            android:inputType="textPassword"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_bot_name"
+            android:textColor="#88AAAAAA"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/edtBotName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_bot_name"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#555555"
+            android:inputType="textPersonName"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_skin"
+            android:textColor="#88AAAAAA"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/spinnerSkin"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:backgroundTint="#AAAAAA" />
+
+        <android.widget.Switch
+            android:id="@+id/swAutoPlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/switch_autoplay"
+            android:textColor="#AAAAAA"
+            android:checked="true"
+            android:layout_marginBottom="8dp" />
+
+        <android.widget.Switch
+            android:id="@+id/swVibrate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/switch_vibrate"
+            android:textColor="#AAAAAA"
+            android:checked="true"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_listen_mode"
+            android:textColor="#88AAAAAA"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/spinnerListenMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
+            android:backgroundTint="#AAAAAA" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnSave"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_save"
+                android:textColor="#FFFFFF"
+                android:layout_marginEnd="16dp" />
+
+            <Button
+                android:id="@+id/btnCancelSettings"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Cancel"
+                android:textColor="#AAAAAA"
+                android:background="@android:color/transparent" />
+        </LinearLayout>
+    </LinearLayout>
+    </ScrollView>
+</FrameLayout>

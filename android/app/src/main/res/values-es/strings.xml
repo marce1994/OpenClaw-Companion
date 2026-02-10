@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Main screen -->
+    <string name="status_ready">Conectado. Mantené presionado para hablar.</string>
+    <string name="status_connecting">Conectando…</string>
+    <string name="status_connected">Conectado</string>
+    <string name="status_disconnected">Desconectado, reconectando…</string>
+    <string name="status_reconnecting">Reconectando…</string>
+    <string name="btn_talk">🎤\nMantener\npara hablar</string>
+    <string name="btn_replay">🔁 Repetir</string>
+    <string name="btn_settings">⚙️ Configuración</string>
+
+    <!-- Settings -->
+    <string name="label_server_url">URL WebSocket</string>
+    <string name="hint_server_url">ws://tu-servidor:3200</string>
+    <string name="label_auth_token">Token de autenticación</string>
+    <string name="label_bot_name">Nombre del bot</string>
+    <string name="hint_bot_name">Asistente</string>
+    <string name="switch_autoplay">Auto-reproducir respuesta</string>
+    <string name="switch_vibrate">Vibrar al grabar</string>
+    <string name="btn_save">Guardar</string>
+
+    <!-- Status messages -->
+    <string name="status_listening">Grabando…</string>
+    <string name="status_transcribing">Transcribiendo…</string>
+    <string name="status_thinking">Pensando…</string>
+    <string name="status_speaking">Reproduciendo…</string>
+    <string name="status_configure">Configurar servidor primero</string>
+    <string name="status_error">Error: %1$s</string>
+
+    <!-- Toasts -->
+    <string name="toast_saved">Guardado</string>
+    <string name="toast_error">Error: %1$s</string>
+
+    <!-- Transcript -->
+    <string name="transcript_you">Vos: %1$s</string>
+    <string name="transcript_bot">%1$s: %2$s</string>
+
+    <!-- Notification -->
+    <string name="notification_title_dynamic">%1$s — OpenClaw Companion</string>
+    <string name="notification_text">Asistente de voz activo</string>
+
+    <!-- Chat UI -->
+    <string name="attach">Adjuntar</string>
+    <string name="attach_photo">Foto de la galería</string>
+    <string name="attach_camera">Tomar foto</string>
+    <string name="attach_file">Archivo</string>
+    <string name="view_artifact">Ver detalles</string>
+    <string name="view_code">Ver código</string>
+    <string name="copy_code">Copiar</string>
+    <string name="copied">¡Copiado!</string>
+    <string name="file_too_large">Archivo muy grande (máx 5MB)</string>
+    <string name="artifact_viewer_title">Detalles</string>
+
+    <!-- Smart Listen Mode -->
+    <string name="label_listen_mode">Modo de escucha</string>
+    <string name="mode_push_to_talk">Apretar para hablar</string>
+    <string name="mode_smart_listen">Escucha inteligente</string>
+    <string name="status_smart_listening">🧠 Escuchando…</string>
+    <string name="status_smart_heard">Escuché: %1$s</string>
+    <string name="smart_mode_hint">Decí "%1$s" para que responda</string>
+</resources>

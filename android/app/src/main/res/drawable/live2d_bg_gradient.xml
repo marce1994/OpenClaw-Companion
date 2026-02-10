@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Base: deep dark blue -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#FF060A1F" />
+        </shape>
+    </item>
+    <!-- Purple/blue radial glow from center-top -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="600dp"
+                android:centerX="0.5"
+                android:centerY="0.25"
+                android:startColor="#33301860"
+                android:endColor="#00000000" />
+        </shape>
+    </item>
+    <!-- Warm accent glow from bottom -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="500dp"
+                android:centerX="0.3"
+                android:centerY="0.9"
+                android:startColor="#221A0A30"
+                android:endColor="#00000000" />
+        </shape>
+    </item>
+</layer-list>

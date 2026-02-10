@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenClaw Companion</string>
+
+    <!-- Main screen -->
+    <string name="title">OpenClaw</string>
+    <string name="status_ready">Connected. Hold to talk.</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected, reconnecting…</string>
+    <string name="status_reconnecting">Reconnecting…</string>
+    <string name="btn_talk">🎤\nHold\nto talk</string>
+    <string name="btn_replay">🔁 Replay</string>
+    <string name="btn_settings">⚙️ Settings</string>
+
+    <!-- Settings -->
+    <string name="label_server_url">WebSocket URL</string>
+    <string name="hint_server_url">ws://your-server:3200</string>
+    <string name="label_auth_token">Auth token</string>
+    <string name="hint_auth_token">your-auth-token</string>
+    <string name="label_bot_name">Bot name</string>
+    <string name="hint_bot_name">Assistant</string>
+    <string name="switch_autoplay">Auto-play response</string>
+    <string name="switch_vibrate">Vibrate on record</string>
+    <string name="btn_save">Save</string>
+
+    <!-- Status messages -->
+    <string name="status_listening">Recording…</string>
+    <string name="status_transcribing">Transcribing…</string>
+    <string name="status_thinking">Thinking…</string>
+    <string name="status_speaking">Playing…</string>
+    <string name="status_configure">Configure server first</string>
+    <string name="status_error">Error: %1$s</string>
+
+    <!-- Toasts -->
+    <string name="toast_saved">Saved</string>
+    <string name="toast_cancelled">Cancelado</string>
+    <string name="label_skin">Orb skin</string>
+    <string name="toast_error">Error: %1$s</string>
+
+    <!-- Transcript -->
+    <string name="transcript_you">You: %1$s</string>
+    <string name="transcript_bot">%1$s: %2$s</string>
+
+    <!-- Notification -->
+    <string name="notification_title_dynamic">%1$s — OpenClaw Companion</string>
+    <string name="notification_text">Voice assistant active</string>
+
+    <!-- Chat UI -->
+    <string name="attach">Attach</string>
+    <string name="attach_photo">Photo from Gallery</string>
+    <string name="attach_camera">Take Photo</string>
+    <string name="attach_file">File</string>
+    <string name="view_artifact">View Details</string>
+    <string name="view_code">View Code</string>
+    <string name="copy_code">Copy</string>
+    <string name="copied">Copied!</string>
+    <string name="file_too_large">File too large (max 5MB)</string>
+    <string name="artifact_viewer_title">Details</string>
+
+    <!-- Smart Listen Mode -->
+    <string name="label_listen_mode">Listen mode</string>
+    <string name="mode_push_to_talk">Push to Talk</string>
+    <string name="mode_smart_listen">Smart Listen</string>
+    <string name="status_smart_listening">🧠 Listening…</string>
+    <string name="status_smart_heard">Heard: %1$s</string>
+    <string name="smart_mode_hint">Say "%1$s" to get a response</string>
+</resources>
