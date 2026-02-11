@@ -12,8 +12,10 @@ const WHISPER_URL = process.env.WHISPER_URL || 'http://172.18.0.1:9000/asr?langu
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://172.18.0.1:18789/v1/chat/completions';
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
 const TTS_VOICE = process.env.TTS_VOICE || 'es-AR-TomasNeural';
-const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge' or 'xtts'
+const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge', 'xtts', or 'kokoro'
 const XTTS_URL = process.env.XTTS_URL || 'http://127.0.0.1:5002';
+const KOKORO_URL = process.env.KOKORO_URL || 'http://127.0.0.1:5004';
+const KOKORO_VOICE = process.env.KOKORO_VOICE || 'em_alex';
 const BOT_NAME = (process.env.BOT_NAME || 'jarvis').toLowerCase();
 const SPEAKER_URL = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
 const OWNER_NAME = process.env.OWNER_NAME || 'Pablo';
@@ -246,12 +248,14 @@ function isGarbageTranscription(text) {
 
 /**
  * Generate TTS audio from text.
- * Supports two engines via TTS_ENGINE env var:
+ * Supports three engines via TTS_ENGINE env var:
  * - 'edge': Edge TTS (cloud, free, good quality, ~300-800ms)
- * - 'xtts': Coqui XTTS v2 (local GPU, voice cloning, ~200-500ms on RTX 3090)
- * @returns {Buffer} Audio data (MP3 for edge, WAV for xtts)
+ * - 'xtts': Coqui XTTS v2 (local GPU, voice cloning, ~1000ms first chunk on RTX 3090)
+ * - 'kokoro': Kokoro TTS (local GPU, fastest, ~400ms on RTX 3090, no voice cloning)
+ * @returns {Buffer} Audio data (MP3 for edge, WAV for xtts/kokoro)
  */
 function generateTTS(text) {
+  if (TTS_ENGINE === 'kokoro') return generateTTS_Kokoro(text);
   if (TTS_ENGINE === 'xtts') return generateTTS_XTTS(text);
   return generateTTS_Edge(text);
 }
@@ -289,6 +293,21 @@ function generateTTS_XTTS(text) {
     return res;
   } catch (e) {
     console.error('XTTS TTS error, falling back to Edge:', e.message);
+    return generateTTS_Edge(text);
+  }
+}
+
+/** Kokoro TTS — local GPU, fastest option (~400ms on RTX 3090) */
+function generateTTS_Kokoro(text) {
+  try {
+    const payload = JSON.stringify({ text, voice: KOKORO_VOICE, speed: 1.0 });
+    const res = execSync(
+      `curl -s --max-time 15 -X POST "${KOKORO_URL}/tts" -H "Content-Type: application/json" -d '${payload.replace(/'/g, "'\\''")}'`,
+      { timeout: 20000, maxBuffer: 10 * 1024 * 1024 }
+    );
+    return res; // WAV audio
+  } catch (e) {
+    console.error('Kokoro TTS error, falling back to Edge:', e.message);
     return generateTTS_Edge(text);
   }
 }
