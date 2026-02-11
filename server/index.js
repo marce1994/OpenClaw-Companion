@@ -1090,6 +1090,16 @@ wss.on('connection', (ws) => {
         else send(ws, { type: 'error', message: 'No audio to replay' });
         break;
 
+      case 'clear_history':
+        ws._conversationHistory = [];
+        // Sync to persistent session store
+        if (ws._sessionId && sessions.has(ws._sessionId)) {
+          sessions.get(ws._sessionId).conversationHistory = [];
+        }
+        console.log(`🧹 Conversation history cleared`);
+        send(ws, { type: 'history_cleared' });
+        break;
+
       case 'ping':
         send(ws, { type: 'pong' });
         break;

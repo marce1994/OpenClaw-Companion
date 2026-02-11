@@ -14,6 +14,20 @@
         android:layout_marginEnd="20dp"
         android:background="@drawable/circle_button" />
 
+    <!-- Conversation history count indicator (long-press to clear) -->
+    <TextView
+        android:id="@+id/txtHistoryCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="38dp"
+        android:layout_marginStart="16dp"
+        android:textSize="12sp"
+        android:textColor="#99FFFFFF"
+        android:padding="4dp"
+        android:visibility="gone"
+        android:background="@android:color/transparent" />
+
     <!-- ===== ORB MODE LAYOUT ===== -->
     <LinearLayout
         android:id="@+id/orbModeLayout"

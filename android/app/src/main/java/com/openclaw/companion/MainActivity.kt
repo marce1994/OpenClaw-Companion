@@ -127,6 +127,9 @@ class MainActivity : Activity() {
     private lateinit var btnTextToVoice: ImageButton
     private var isTextMode = false
 
+    // Conversation history indicator
+    private lateinit var txtHistoryCount: TextView
+
     // Shared views
     private lateinit var connectionDot: View
     private lateinit var btnCancelSettings: Button
@@ -303,6 +306,12 @@ class MainActivity : Activity() {
         swVibrate = findViewById(R.id.swVibrate)
         spinnerSkin = findViewById(R.id.spinnerSkin)
         btnCancelSettings = findViewById(R.id.btnCancelSettings)
+
+        txtHistoryCount = findViewById(R.id.txtHistoryCount)
+        txtHistoryCount.setOnLongClickListener {
+            clearConversationHistory()
+            true
+        }
 
         prefs = getSharedPreferences("openclaw_companion", MODE_PRIVATE)
         edtServer.setText(prefs.getString("server_url", "ws://100.121.248.113:3200"))
@@ -557,6 +566,74 @@ class MainActivity : Activity() {
         }
     }
 
+    // --- Conversation history ---
+
+    private var conversationHistoryCount = 0
+
+    private fun updateHistoryCount(count: Int) {
+        conversationHistoryCount = count
+        handler.post {
+            if (count > 0) {
+                txtHistoryCount.text = "💬 $count"
+                txtHistoryCount.visibility = View.VISIBLE
+            } else {
+                txtHistoryCount.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun clearConversationHistory() {
+        if (!isConnected) return
+        sendWs(JSONObject().put("type", "clear_history"))
+        updateHistoryCount(0)
+        Toast.makeText(this, "Conversation cleared", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Barge-in: user starts speaking while AI is playing audio.
+     * Stops playback, clears queue, and notifies the server.
+     */
+    private fun bargeIn() {
+        if (currentUiState != "speaking" && !isPlayingChunks && mediaPlayer == null) return
+        Log.d("OpenClaw", "Barge-in triggered")
+
+        // Stop all audio playback
+        stopAllPlayback()
+
+        // Notify server
+        sendWs(JSONObject().put("type", "barge_in"))
+    }
+
+    /**
+     * Stop all audio playback and clear queues (used by barge-in and stop_playback).
+     */
+    private fun stopAllPlayback() {
+        releaseVisualizer()
+        cancelEmotionCues()
+        audioChunkQueue.clear()
+        isPlayingChunks = false
+        streamComplete = false
+
+        mediaPlayer?.let {
+            try { it.stop() } catch (_: Exception) {}
+            it.release()
+        }
+        mediaPlayer = null
+
+        smartPaused = false
+        currentUiState = "idle"
+
+        handler.post {
+            setActiveState(OrbView.State.IDLE)
+            if (listenMode == "smart_listen" && isConnected) {
+                setStatusText(getString(R.string.status_smart_listening))
+            } else {
+                setStatusText(getString(R.string.status_connected))
+            }
+            updateCancelButtonVisibility()
+        }
+    }
+
     private fun cancelProcessing() {
         releaseVisualizer()
         cancelEmotionCues()
@@ -708,11 +785,16 @@ class MainActivity : Activity() {
             "/voices" -> {
                 sendWs(JSONObject().put("type", "get_profiles"))
             }
+            "/clear" -> {
+                clearConversationHistory()
+                addChatMessage(ChatMessage(role = "system", text = "🗑️ Conversation history cleared", emotion = "neutral"))
+            }
             "/help" -> {
                 addChatMessage(ChatMessage(role = "system", text = """
                     📋 Commands:
                     /enroll <name> — Register a voice profile
                     /voices — List registered voices
+                    /clear — Clear conversation history
                     /help — Show this help
                 """.trimIndent(), emotion = "neutral"))
             }
@@ -922,6 +1004,20 @@ class MainActivity : Activity() {
                 return@Thread
             }
 
+            // Enable AEC on smart listen mic to filter out speaker output
+            try {
+                val sessionId = smartAudioRecord!!.audioSessionId
+                if (AcousticEchoCanceler.isAvailable()) {
+                    AcousticEchoCanceler.create(sessionId)?.apply { enabled = true }
+                    Log.d("OpenClaw", "AEC enabled for smart listen")
+                }
+                if (NoiseSuppressor.isAvailable()) {
+                    NoiseSuppressor.create(sessionId)?.apply { enabled = true }
+                }
+            } catch (e: Exception) {
+                Log.w("OpenClaw", "Smart listen audio effects error", e)
+            }
+
             smartAudioRecord?.startRecording()
             val buffer = ByteArray(bufSize)
             var speechBuffer = ByteArrayOutputStream()
@@ -943,6 +1039,13 @@ class MainActivity : Activity() {
                     }
                 }
                 val rms = Math.sqrt(sum.toDouble() / (read / 2)).toFloat()
+
+                // Barge-in: if AI is playing and user speaks, interrupt
+                if (smartPaused && rms > SILENCE_THRESHOLD_RMS) {
+                    handler.post { bargeIn() }
+                    // smartPaused is now false (set by bargeIn/stopAllPlayback)
+                    // Fall through to normal speech detection
+                }
 
                 // Skip processing while AI is responding
                 if (smartPaused) {
@@ -1086,6 +1189,8 @@ class MainActivity : Activity() {
 
     private var isReconnecting = false
     private var connectionId = 0L  // Track which connection events belong to
+    private var wsSessionId: String? = null  // Server session ID for reconnect sync
+    private var lastServerSeq = 0  // Last server seq received (for replay on reconnect)
 
     private fun connectWebSocket() {
         // Close existing connection without triggering onDisconnect loop
@@ -1118,7 +1223,10 @@ class MainActivity : Activity() {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.d("OpenClaw", "WS opened")
-                ws.send(JSONObject().put("type", "auth").put("token", authToken).toString())
+                val authMsg = JSONObject().put("type", "auth").put("token", authToken)
+                wsSessionId?.let { authMsg.put("sessionId", it) }
+                if (lastServerSeq > 0) authMsg.put("lastServerSeq", lastServerSeq)
+                ws.send(authMsg.toString())
                 isConnected = true
                 isReconnecting = false
                 reconnectDelay = 1000L
@@ -1143,7 +1251,34 @@ class MainActivity : Activity() {
             override fun onMessage(ws: WebSocket, text: String) {
                 try {
                     val msg = JSONObject(text)
+                    
+                    // Track server seq for reconnect sync
+                    if (msg.has("sseq")) {
+                        lastServerSeq = msg.optInt("sseq", lastServerSeq)
+                    }
+                    
+                    // Skip replayed messages we already have in chat
+                    if (msg.optBoolean("_replayed", false)) {
+                        Log.d("OpenClaw", "Replayed msg sseq=${msg.optInt("sseq")}, type=${msg.optString("type")}")
+                        // Still process to update UI state, but don't duplicate chat messages
+                        // For now, just skip — the chat history is already showing them
+                        return
+                    }
+                    
                     when (msg.optString("type")) {
+                        "auth" -> {
+                            // Save session ID for reconnect
+                            if (msg.has("sessionId")) {
+                                wsSessionId = msg.optString("sessionId")
+                                Log.d("OpenClaw", "Session: ${wsSessionId?.take(8)}, serverSeq: ${msg.optInt("serverSeq", 0)}")
+                            }
+                            if (msg.has("historyCount")) {
+                                updateHistoryCount(msg.optInt("historyCount", 0))
+                            }
+                        }
+                        "history_count" -> {
+                            updateHistoryCount(msg.optInt("count", 0))
+                        }
                         "transcript" -> {
                             val t = msg.optString("text", "")
                             handler.post {
@@ -1312,6 +1447,10 @@ class MainActivity : Activity() {
                             val emotion = msg.optString("emotion", "neutral")
                             handler.post { setActiveEmotion(emotion) }
                         }
+                        "stop_playback" -> {
+                            Log.d("OpenClaw", "Server requested stop_playback")
+                            handler.post { stopAllPlayback() }
+                        }
                         "pong" -> { /* keepalive OK */ }
                         "enroll_result" -> {
                             val status = msg.optString("status", "")
@@ -1469,6 +1608,11 @@ class MainActivity : Activity() {
 
     private fun startRecording() {
         if (isRecording || !isConnected) return
+
+        // Barge-in: if AI is playing audio, interrupt it
+        if (currentUiState == "speaking" || isPlayingChunks || mediaPlayer != null) {
+            bargeIn()
+        }
 
         val bufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)

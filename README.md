@@ -19,6 +19,8 @@ Open-source voice assistant app for [OpenClaw](https://github.com/openclaw/openc
 - **Text input** — type messages for noisy environments
 - **SSE streaming with sentence-by-sentence TTS** — hear the first sentence while the AI is still generating the rest
 - **Emotion detection** — avatar reacts to the mood of the response
+- **Barge-in** — interrupt the AI mid-response by speaking; partial context is preserved
+- **Conversation memory** — maintains last 10 exchanges for multi-turn context, persists across reconnects
 - **Replay last response** — tap to hear the last answer again
 - **Works over Tailscale / LAN / WAN** — connect from anywhere
 - **Headphone media button** — trigger recording via wired/Bluetooth headset
@@ -34,7 +36,17 @@ Open-source voice assistant app for [OpenClaw](https://github.com/openclaw/openc
 
 ## 🚀 Quick Start
 
-### 1. Start the Bridge Server
+### 1. Start Whisper ASR
+
+```bash
+docker run -d --gpus all -p 9000:9000 \
+  -v whisper-models:/root/.cache \
+  -e ASR_MODEL=large-v3-turbo \
+  -e ASR_ENGINE=faster_whisper \
+  onerahmet/openai-whisper-asr-webservice:latest-gpu
+```
+
+### 2. Start the Bridge Server
 
 ```bash
 cp .env.example .env
@@ -45,7 +57,7 @@ docker build -t openclaw-companion-server .
 docker run -d -p 3200:3200 --env-file ../.env openclaw-companion-server
 ```
 
-### 2. Build the Android APK
+### 3. Build the Android APK
 
 **With Docker (no SDK needed):**
 
@@ -74,20 +86,32 @@ Environment variables for the bridge server:
 | `GATEWAY_URL` | `http://localhost:18789/v1/chat/completions` | OpenClaw chat completions endpoint |
 | `GATEWAY_TOKEN` | — | Bearer token for the OpenClaw gateway |
 | `TTS_VOICE` | `es-AR-TomasNeural` | Edge TTS voice ([list voices](https://gist.github.com/BettyJJ/17cbaa1de96235a7f5773b8571a3ea95)) |
+| `BOT_NAME` | `jarvis` | Wake word for ambient/smart-listen mode |
+| `SPEAKER_URL` | `http://127.0.0.1:3201` | Speaker identification service URL |
+| `OWNER_NAME` | `Pablo` | Primary user name (for speaker identification) |
 
 ## 📡 WebSocket Protocol
 
-The app communicates with the bridge server over WebSocket (JSON messages):
+The app communicates with the bridge server over WebSocket (JSON messages). Sessions persist across reconnects.
 
-1. **Auth** — Client sends `{type: "auth", token: "..."}`, server responds `{type: "auth", status: "ok"}`
-2. **Send audio** — `{type: "audio", data: "<base64 WAV>"}` → server transcribes, queries LLM, streams TTS back
-3. **Send text** — `{type: "text", text: "..."}` → same flow, skips transcription
-4. **Server streams back:**
-   - `{type: "status", status: "transcribing|thinking|speaking|idle"}`
-   - `{type: "transcript", text: "..."}` — what Whisper heard
-   - `{type: "reply_chunk", text: "...", index: N, emotion: "..."}` — each sentence
-   - `{type: "audio_chunk", data: "<base64 MP3>", index: N}` — TTS for each sentence
-   - `{type: "stream_done"}` — all chunks sent
+**Client → Server:**
+- `auth` — authenticate with token and optional session ID
+- `audio` / `text` / `image` / `file` — send input for processing
+- `ambient_audio` — always-listening mode audio
+- `barge_in` — interrupt AI mid-response (aborts LLM, stops playback)
+- `clear_history` — clear conversation memory
+- `cancel` — cancel current generation
+- `ping` — keep-alive
+
+**Server → Client:**
+- `status` — state changes (`transcribing` → `thinking` → `speaking` → `idle`)
+- `transcript` — what Whisper heard
+- `reply_chunk` + `audio_chunk` — streamed sentence-by-sentence with TTS
+- `stream_done` — all chunks sent
+- `stop_playback` — stop audio (sent on barge-in)
+- `history_cleared` — conversation memory cleared
+- `emotion` — avatar emotion tag
+- `error` — error message
 
 See [server/README.md](server/README.md) for the full protocol reference.
 

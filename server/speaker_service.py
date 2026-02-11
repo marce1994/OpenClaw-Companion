@@ -120,14 +120,15 @@ class SpeakerHandler(BaseHTTPRequestHandler):
                     return
                 
                 name, sim = identify_speaker(embedding)
+                has_profiles = len(profiles) > 0
                 if name:
                     print(f"🎯 Identified: {name} (sim={sim:.3f})", flush=True)
-                    self._respond(200, {"speaker": name, "similarity": sim, "known": True})
+                    self._respond(200, {"speaker": name, "similarity": sim, "known": True, "hasProfiles": has_profiles})
                 else:
                     # Assign unknown speaker ID
                     uid, usim = get_or_assign_unknown(embedding)
                     print(f"❓ Unknown speaker → {uid} (best_known_sim={sim:.3f})", flush=True)
-                    self._respond(200, {"speaker": uid, "similarity": sim, "known": False})
+                    self._respond(200, {"speaker": uid, "similarity": sim, "known": False, "hasProfiles": has_profiles})
             except Exception as e:
                 print(f"❌ Identify error: {e}", flush=True)
                 self._respond(500, {"error": str(e)})
