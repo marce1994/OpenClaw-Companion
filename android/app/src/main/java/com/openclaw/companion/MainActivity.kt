@@ -1425,6 +1425,12 @@ class MainActivity : Activity() {
                         "stream_done" -> {
                             streamComplete = true
                             waitingForResponse = false
+                            // Update history count if provided, otherwise increment locally
+                            if (msg.has("historyCount")) {
+                                updateHistoryCount(msg.optInt("historyCount", 0))
+                            } else {
+                                updateHistoryCount(conversationHistoryCount + 2) // user + assistant
+                            }
                             handler.post {
                                 // Finalize streaming message
                                 val last = chatMessages.lastOrNull()
