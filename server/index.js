@@ -12,6 +12,8 @@ const WHISPER_URL = process.env.WHISPER_URL || 'http://172.18.0.1:9000/asr?langu
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://172.18.0.1:18789/v1/chat/completions';
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
 const TTS_VOICE = process.env.TTS_VOICE || 'es-AR-TomasNeural';
+const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge' or 'xtts'
+const XTTS_URL = process.env.XTTS_URL || 'http://127.0.0.1:5002';
 const BOT_NAME = (process.env.BOT_NAME || 'jarvis').toLowerCase();
 const SPEAKER_URL = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
 const OWNER_NAME = process.env.OWNER_NAME || 'Pablo';
@@ -240,10 +242,22 @@ function isGarbageTranscription(text) {
   return false;
 }
 
-// ─── TTS (Edge TTS) ────────────────────────────────────────────────────────
+// ─── TTS Engine ─────────────────────────────────────────────────────────────
 
-/** Generate TTS audio (MP3) from text using edge-tts CLI */
+/**
+ * Generate TTS audio from text.
+ * Supports two engines via TTS_ENGINE env var:
+ * - 'edge': Edge TTS (cloud, free, good quality, ~300-800ms)
+ * - 'xtts': Coqui XTTS v2 (local GPU, voice cloning, ~200-500ms on RTX 3090)
+ * @returns {Buffer} Audio data (MP3 for edge, WAV for xtts)
+ */
 function generateTTS(text) {
+  if (TTS_ENGINE === 'xtts') return generateTTS_XTTS(text);
+  return generateTTS_Edge(text);
+}
+
+/** Edge TTS — cloud-based, uses edge-tts CLI */
+function generateTTS_Edge(text) {
   const ttsFile = `/tmp/tts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const textFile = `${ttsFile}.txt`;
   fs.writeFileSync(textFile, text);
@@ -255,6 +269,28 @@ function generateTTS(text) {
   const data = fs.readFileSync(`${ttsFile}.mp3`);
   try { fs.unlinkSync(`${ttsFile}.mp3`); } catch (e) { /* ignore */ }
   return data;
+}
+
+/** XTTS v2 — local GPU, voice cloning via xtts-streaming-server */
+function generateTTS_XTTS(text) {
+  try {
+    const payload = JSON.stringify({
+      text,
+      language: 'es',
+      speaker_wav: '/tmp/reference.wav',
+      stream: false,
+    });
+    const url = new URL('/tts', XTTS_URL);
+    const res = execSync(`curl -s --max-time 30 -X POST "${url.href}" -H "Content-Type: application/json" -d '${payload.replace(/'/g, "'\\''")}'`, {
+      timeout: 35000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    // XTTS returns raw WAV audio
+    return res;
+  } catch (e) {
+    console.error('XTTS TTS error, falling back to Edge:', e.message);
+    return generateTTS_Edge(text);
+  }
 }
 
 // ─── Emotion Detection & Extraction ─────────────────────────────────────────
