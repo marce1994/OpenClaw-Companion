@@ -1,15 +1,20 @@
 ###############################################################################
 # OpenClaw Companion — Docker Compose
 #
-# Quick start:
+# Quick start (Edge TTS, CPU Whisper):
 #   cp .env.example .env   # edit with your values
-#   docker compose up -d   # start all services
-#
-# GPU support (NVIDIA):
-#   docker compose --profile gpu up -d
-#
-# CPU-only (default):
 #   docker compose up -d
+#
+# GPU Whisper (much faster):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# With Kokoro TTS (local GPU, ~400ms, no voice cloning):
+#   Set TTS_ENGINE=kokoro in .env
+#   docker compose --profile kokoro up -d
+#
+# With XTTS v2 (local GPU, voice cloning, ~1s):
+#   Set TTS_ENGINE=xtts in .env
+#   docker compose --profile xtts up -d
 ###############################################################################
 
 services:
@@ -29,9 +34,9 @@ services:
       - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
       - BOT_NAME=${BOT_NAME:-assistant}
       - OWNER_NAME=${OWNER_NAME:-User}
-      - KOKORO_URL=${KOKORO_URL:-}
+      - KOKORO_URL=${KOKORO_URL:-http://kokoro-tts:8080}
       - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
-      - XTTS_URL=${XTTS_URL:-}
+      - XTTS_URL=${XTTS_URL:-http://xtts-server:80}
     volumes:
       - speaker-profiles:/data/speakers
     depends_on:
@@ -51,6 +56,45 @@ services:
       - ASR_ENGINE=faster_whisper
     volumes:
       - whisper-models:/root/.cache
+
+  # ─── Kokoro TTS (optional, local GPU, ~400ms) ──────────────────────────────
+  # Enable: set TTS_ENGINE=kokoro in .env, then:
+  #   docker compose --profile kokoro up -d
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi:latest
+    container_name: openclaw-companion-kokoro
+    restart: unless-stopped
+    profiles: ["kokoro"]
+    ports:
+      - "5004:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ─── XTTS v2 (optional, local GPU, voice cloning, ~1s first chunk) ────────
+  # Enable: set TTS_ENGINE=xtts in .env, then:
+  #   docker compose --profile xtts up -d
+  # NOTE: ~30GB image, first pull takes a while
+  xtts-server:
+    image: ghcr.io/coqui-ai/xtts-streaming-server:latest-cuda121
+    container_name: openclaw-companion-xtts
+    restart: unless-stopped
+    profiles: ["xtts"]
+    ports:
+      - "5002:80"
+    environment:
+      - COQUI_TOS_AGREED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 volumes:
   speaker-profiles:
