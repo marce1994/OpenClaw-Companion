@@ -1,144 +1,121 @@
 # 🐾 OpenClaw Companion
 
-Open-source voice assistant app for [OpenClaw](https://github.com/openclaw/openclaw). Talk to your AI assistant via voice or text from your Android phone.
+Open-source voice assistant app for [OpenClaw](https://github.com/nichochar/openclaw). Talk to your AI through voice or text from your Android phone, with real-time streaming responses and an animated avatar.
 
-```
-┌──────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│  Android App │◄──WS──►│  Bridge Server   │────────►│  Whisper STT    │
-│              │         │  (Node.js)       │────────►│  OpenClaw GW    │
-│  • Voice     │         │                  │────────►│  Edge TTS       │
-│  • Text      │         │  Streams back    │         └─────────────────┘
-│  • Playback  │         │  sentence-by-    │
-└──────────────┘         │  sentence audio  │
-                         └──────────────────┘
-```
+<!-- TODO: Add screenshot/demo GIF here -->
+<!-- ![Demo](docs/demo.gif) -->
 
 ## ✨ Features
 
-- **Push-to-talk voice** — hold the button, speak, release to send
-- **Text input** — type messages for noisy environments
-- **SSE streaming with sentence-by-sentence TTS** — hear the first sentence while the AI is still generating the rest
-- **Emotion detection** — avatar reacts to the mood of the response
-- **Barge-in** — interrupt the AI mid-response by speaking; partial context is preserved
-- **Conversation memory** — maintains last 10 exchanges for multi-turn context, persists across reconnects
-- **Replay last response** — tap to hear the last answer again
-- **Works over Tailscale / LAN / WAN** — connect from anywhere
-- **Headphone media button** — trigger recording via wired/Bluetooth headset
-- **Lock screen support** — works with screen off via foreground service
+- **Push-to-talk voice** — hold, speak, release
+- **Streaming sentence-by-sentence TTS** — hear the first sentence while the AI is still generating
+- **Emotion-reactive avatar** — 9 animated emotions (happy, sad, surprised, thinking, confused, laughing, neutral, angry, love)
+- **Barge-in** — interrupt the AI mid-response; partial context is preserved
+- **Conversation memory** — 10-exchange sliding window, persists across reconnects
+- **Smart listen mode** — ambient always-on listening with wake word detection
+- **Speaker identification** — recognizes enrolled voices, prioritizes the owner
+- **Vision & file analysis** — send images or text files for AI analysis
+- **Web search** — automatic search integration for factual queries
+- **Multiple TTS engines** — Edge (cloud), Kokoro (local), XTTS (local + voice cloning)
+- **Works over Tailscale / LAN / WAN**
+- **Headphone media button & lock screen support**
 
-## 📋 Prerequisites
+## Architecture
 
-| Component | Description |
-|-----------|-------------|
-| **OpenClaw** | An OpenClaw instance with `chatCompletions` enabled |
-| **Whisper ASR** | A Whisper STT container (e.g. [whisper-asr-webservice](https://github.com/ahmetoner/whisper-asr-webservice)) |
-| **Docker** | For building and running the server (and optionally the APK) |
+```
+┌─────────────────┐        WebSocket         ┌──────────────────────────────┐
+│                 │◄────────────────────────►│  Voice Server (Node.js)      │
+│  Android App    │   audio/text/images      │                              │
+│                 │◄── reply_chunk ──────────│  ┌─────────────┐             │
+│  • Voice input  │◄── audio_chunk ─────────│  │ Speaker ID  │ (Python)    │
+│  • Avatar       │                          │  │ :3201       │             │
+│  • Text chat    │                          │  └─────────────┘             │
+└─────────────────┘                          │         │                    │
+                                             │         ▼                    │
+                                             │  ┌─────────────┐            │
+                                             │  │ Whisper ASR │ :9000      │
+                                             │  └─────────────┘            │
+                                             │         │                    │
+                                             │         ▼                    │
+                                             │  ┌──────────────────┐       │
+                                             │  │ OpenClaw Gateway │       │
+                                             │  │ (LLM)            │       │
+                                             │  └──────────────────┘       │
+                                             │         │                    │
+                                             │         ▼                    │
+                                             │  ┌─────────────┐            │
+                                             │  │ TTS Engine  │            │
+                                             │  └─────────────┘            │
+                                             └──────────────────────────────┘
+```
 
 ## 🚀 Quick Start
 
-### 1. Start the server (Docker Compose)
+### Server (Docker Compose)
 
 ```bash
-cp .env.example .env
-# Edit .env — you MUST set GATEWAY_URL and GATEWAY_TOKEN
-
-# CPU (works everywhere):
-docker compose up -d
-
-# GPU (NVIDIA, much faster transcription):
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+cp .env.example .env          # Edit: set GATEWAY_TOKEN at minimum
+docker compose up -d           # CPU mode — works everywhere
+# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d  # GPU mode
 ```
 
-That's it! The server is now running on port 3200.
+Get the auth token for the Android app:
 
-### 2. Build the Android APK
+```bash
+docker compose logs voice-server | grep "Token:"
+```
 
-**With Docker (no Android SDK needed):**
+### Android App
 
+**Option A — Docker build (no SDK needed):**
 ```bash
 cd android
 docker build -t openclaw-companion-apk .
-docker create --name apk-tmp openclaw-companion-apk
-docker cp apk-tmp:/project/app/build/outputs/apk/debug/app-debug.apk ./openclaw-companion.apk
-docker rm apk-tmp
+docker run --rm openclaw-companion-apk > openclaw-companion.apk
 ```
 
-**With Android Studio:**
+**Option B — Android Studio:**
+1. Open `android/` in Android Studio
+2. Build → Build APK(s)
 
-1. Open the `android/` directory in Android Studio
-2. Sync Gradle
-3. Build → Build APK(s)
-
-### 3. Connect
-
-Install the APK, open the app, go to Settings, and enter:
-- **Server URL:** `ws://YOUR-SERVER-IP:3200`
-- **Auth token:** the `AUTH_TOKEN` from your `.env`
+Install the APK, open Settings, enter your server URL (`ws://YOUR_IP:3200`) and auth token.
 
 ## ⚙️ Configuration
 
-All configuration is done via environment variables in `.env`. See [`.env.example`](.env.example) for the full reference.
-
-**Required:**
-
-| Variable | Description |
-|----------|-------------|
-| `GATEWAY_URL` | OpenClaw chat completions endpoint (e.g. `http://host.docker.internal:18789/v1/chat/completions`) |
-| `GATEWAY_TOKEN` | Bearer token for the OpenClaw gateway |
-| `AUTH_TOKEN` | Shared secret between the Android app and server |
-
-**Optional (have sensible defaults):**
+Copy `.env.example` to `.env` and edit. Key variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TTS_ENGINE` | `edge` | TTS engine: `edge` (cloud), `kokoro` (local GPU), `xtts` (local GPU) |
-| `TTS_VOICE` | `es-AR-TomasNeural` | Edge TTS voice ([list voices](https://gist.github.com/BettyJJ/17cbaa1de96235a7f5773b8571a3ea95)) |
-| `ASR_MODEL` | `small` (CPU) / `large-v3-turbo` (GPU) | Whisper model |
-| `ASR_LANGUAGE` | `es` | Speech recognition language |
-| `BOT_NAME` | `assistant` | Wake word for Smart Listen mode |
-| `OWNER_NAME` | `User` | Primary user name for speaker identification |
+| `AUTH_TOKEN` | *(random)* | Shared secret for app ↔ server auth |
+| `GATEWAY_URL` | `http://host.docker.internal:18789/...` | OpenClaw chat completions endpoint |
+| `GATEWAY_TOKEN` | *(required)* | OpenClaw gateway bearer token |
+| `TTS_ENGINE` | `edge` | TTS engine: `edge`, `kokoro`, or `xtts` |
+| `TTS_VOICE` | `es-AR-TomasNeural` | Edge TTS voice name |
+| `BOT_NAME` | `jarvis` | Wake word for smart-listen mode |
+| `WHISPER_LANG` | `es` | Whisper transcription language |
+| `ASR_MODEL` | `large-v3-turbo` | Whisper model size |
 
-## 📡 WebSocket Protocol
-
-The app communicates with the bridge server over WebSocket (JSON messages). Sessions persist across reconnects.
-
-**Client → Server:**
-- `auth` — authenticate with token and optional session ID
-- `audio` / `text` / `image` / `file` — send input for processing
-- `ambient_audio` — always-listening mode audio
-- `barge_in` — interrupt AI mid-response (aborts LLM, stops playback)
-- `clear_history` — clear conversation memory
-- `cancel` — cancel current generation
-- `ping` — keep-alive
-
-**Server → Client:**
-- `status` — state changes (`transcribing` → `thinking` → `speaking` → `idle`)
-- `transcript` — what Whisper heard
-- `reply_chunk` + `audio_chunk` — streamed sentence-by-sentence with TTS
-- `stream_done` — all chunks sent
-- `stop_playback` — stop audio (sent on barge-in)
-- `history_cleared` — conversation memory cleared
-- `emotion` — avatar emotion tag
-- `error` — error message
-
-See [server/README.md](server/README.md) for the full protocol reference.
+See [`.env.example`](.env.example) for the complete reference with descriptions.
 
 ## 📂 Project Structure
 
 ```
-├── docker-compose.yml   One-command server setup
-├── .env.example         Configuration template
-├── server/              Bridge server (Node.js + Python)
-│   ├── index.js         WebSocket server & TTS
-│   ├── speaker_service.py  Speaker identification (Resemblyzer)
-│   ├── Dockerfile
-│   └── README.md        Server docs & protocol reference
-├── android/             Android app (Kotlin)
-│   ├── app/src/main/    App source code
-│   └── Dockerfile       APK build without Android Studio
-├── PLAN.md              Development roadmap
-└── LICENSE              MIT
+├── server/                Bridge server (Node.js + Python)
+│   ├── index.js           WebSocket server & LLM streaming
+│   ├── speaker_service.py Speaker identification (resemblyzer)
+│   ├── Dockerfile         Server container build
+│   └── README.md          Server docs & WebSocket protocol reference
+├── android/               Android app (Kotlin)
+├── docker-compose.yml     CPU deployment (default)
+├── docker-compose.gpu.yml GPU override for NVIDIA
+├── .env.example           Configuration template
+└── README.md              This file
 ```
+
+## 📖 Documentation
+
+- **[Server README](server/README.md)** — setup, configuration, full WebSocket protocol reference, troubleshooting
+- **[`.env.example`](.env.example)** — all environment variables with descriptions
 
 ## 🤝 Contributing
 
@@ -147,7 +124,18 @@ Contributions are welcome! Please:
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/my-feature`)
 3. Commit your changes
-4. Push to the branch and open a Pull Request
+4. Push and open a Pull Request
+
+### Development
+
+```bash
+# Run server locally (without Docker)
+cd server && npm install
+node index.js
+
+# Run Whisper separately
+docker run -d -p 9000:9000 -e ASR_MODEL=base onerahmet/openai-whisper-asr-webservice:latest
+```
 
 ## 📄 License
 
@@ -155,4 +143,6 @@ Contributions are welcome! Please:
 
 ## 🔗 Links
 
-- [OpenClaw](https://github.com/openclaw/openclaw) — the AI gateway this app connects to
+- [OpenClaw](https://github.com/nichochar/openclaw) — the AI gateway this connects to
+- [Whisper ASR](https://github.com/ahmetoner/whisper-asr-webservice) — speech recognition service
+- [Edge TTS](https://github.com/rany2/edge-tts) — default text-to-speech engine
