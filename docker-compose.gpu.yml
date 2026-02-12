@@ -1,0 +1,19 @@
+###############################################################################
+# GPU override — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+###############################################################################
+
+services:
+  whisper-asr:
+    image: onerahmet/openai-whisper-asr-webservice:latest-gpu
+    environment:
+      - ASR_MODEL=${ASR_MODEL:-large-v3-turbo}
+      - ASR_ENGINE=faster_whisper
+      - ASR_DEVICE=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

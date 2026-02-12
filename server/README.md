@@ -1,276 +1,210 @@
-# Bridge Server
+# OpenClaw Companion — Bridge Server
 
-A Node.js WebSocket server that bridges the Android app with Whisper ASR, an OpenClaw gateway, and Edge TTS. It streams AI responses sentence-by-sentence with parallel TTS generation for low-latency voice output.
+WebSocket server that bridges the Android app with Whisper ASR, OpenClaw gateway, and TTS. Streams AI responses sentence-by-sentence with parallel TTS generation for low-latency voice output.
 
-## How It Works
+## Prerequisites
 
-1. Android app connects via WebSocket and authenticates
-2. App sends audio (WAV) or text
-3. Server transcribes audio with Whisper ASR
-4. Server streams the transcribed text to OpenClaw gateway via SSE (`stream: true`)
-5. As LLM tokens arrive, the server accumulates them until a sentence boundary (`.` `!` `?`)
-6. Each complete sentence is sent to Edge TTS in parallel
-7. Text chunks and audio chunks are streamed back to the app as they're ready
-8. App starts playing audio while the LLM is still generating
+- **Docker** and **Docker Compose** v2+
+- **OpenClaw** gateway running with `chatCompletions` enabled
+- A gateway auth token (from your OpenClaw config)
 
-This streaming approach reduces perceived latency by 2-4 seconds compared to waiting for the full response.
-
-## Setup
-
-### Whisper ASR (GPU)
+## Quick Start
 
 ```bash
-docker run -d --gpus all -p 9000:9000 \
-  -v whisper-models:/root/.cache \
-  -e ASR_MODEL=large-v3-turbo \
-  -e ASR_ENGINE=faster_whisper \
-  onerahmet/openai-whisper-asr-webservice:latest-gpu
+# From the project root (not server/)
+cp .env.example .env        # Edit with your GATEWAY_TOKEN and other settings
+docker compose up -d         # CPU mode (works everywhere)
 ```
 
-### Voice Server (Docker)
+That's it. The server prints the auth token at startup:
 
 ```bash
-docker build -t openclaw-companion-server .
-docker run -d -p 3200:3200 \
-  -e AUTH_TOKEN="your-secret-token" \
-  -e WHISPER_URL="http://host.docker.internal:9000/asr?language=es&output=json" \
-  -e GATEWAY_URL="http://host.docker.internal:18789/v1/chat/completions" \
-  -e GATEWAY_TOKEN="your-gateway-token" \
-  -e TTS_VOICE="es-AR-TomasNeural" \
-  openclaw-companion-server
+docker compose logs voice-server | grep "Token:"
 ```
 
-### Direct (Node.js 18+)
+Enter that token in the Android app's settings along with your server URL.
+
+### GPU Mode (NVIDIA)
 
 ```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+
+### Without Docker
+
+```bash
+cd server
 npm install
-export AUTH_TOKEN="your-secret-token"
-export WHISPER_URL="http://localhost:9000/asr?language=es&output=json"
-export GATEWAY_URL="http://localhost:18789/v1/chat/completions"
-export GATEWAY_TOKEN="your-gateway-token"
-export TTS_VOICE="es-AR-TomasNeural"
-node index.js
+pip install edge-tts resemblyzer soundfile numpy scipy librosa duckduckgo-search torch --index-url https://download.pytorch.org/whl/cpu
+python3 speaker_service.py &   # Speaker ID service on port 3201
+node index.js                  # WebSocket server on port 3200
 ```
 
-## Environment Variables
+## Configuration Reference
+
+All variables are set via environment or `.env` file. See [`.env.example`](../.env.example) for the full annotated list.
+
+### Core
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `3200` | Server listen port |
-| `AUTH_TOKEN` | Random (printed at startup) | Shared secret for client auth |
-| `WHISPER_URL` | `http://172.18.0.1:9000/asr?language=es&output=json` | Whisper ASR endpoint (supports both `/asr` and `/v1/audio/transcriptions`) |
-| `GATEWAY_URL` | `http://172.18.0.1:18789/v1/chat/completions` | OpenClaw chat completions endpoint |
-| `GATEWAY_TOKEN` | — | Bearer token for the OpenClaw gateway |
-| `TTS_VOICE` | `es-AR-TomasNeural` | Edge TTS voice name |
+| `PORT` | `3200` | WebSocket server port |
+| `AUTH_TOKEN` | *(random)* | Shared secret for client auth. Printed at startup if auto-generated. |
+| `GATEWAY_URL` | `http://host.docker.internal:18789/v1/chat/completions` | OpenClaw chat completions endpoint |
+| `GATEWAY_TOKEN` | *(required)* | Bearer token for the OpenClaw gateway |
+| `WHISPER_URL` | `http://whisper-asr:9000/asr?language=es&output=json` | Whisper ASR endpoint (auto-set by Docker Compose) |
 | `BOT_NAME` | `jarvis` | Wake word for ambient/smart-listen mode |
-| `SPEAKER_URL` | `http://127.0.0.1:3201` | Speaker identification service URL |
-| `OWNER_NAME` | `Pablo` | Name of the primary user (for speaker identification) |
+| `OWNER_NAME` | `User` | Primary user name for speaker identification |
+| `SPEAKER_URL` | `http://127.0.0.1:3201` | Speaker ID service (same container, don't change) |
+
+### TTS Engines
+
+Set `TTS_ENGINE` to one of the following:
+
+#### `edge` (default) — Microsoft Edge TTS
+- **Pros:** Free, no setup, good quality, ~300-800ms latency
+- **Cons:** Requires internet, limited voice customization
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TTS_VOICE` | `es-AR-TomasNeural` | Voice name ([browse voices](https://gist.github.com/BettyJJ/17cbaa1de96235a7f5773b8571a3ea95)) |
+
+#### `kokoro` — Kokoro TTS (local GPU)
+- **Pros:** Fastest local option (~400ms on RTX 3090), no internet needed
+- **Cons:** Requires GPU, separate container
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KOKORO_URL` | `http://host.docker.internal:5004` | Kokoro TTS server URL |
+| `KOKORO_VOICE` | `em_alex` | Voice ID |
+
+#### `xtts` — Coqui XTTS v2 (local GPU)
+- **Pros:** Voice cloning from reference audio, no internet needed
+- **Cons:** Slowest (~1000ms first chunk on RTX 3090), requires GPU
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `XTTS_URL` | `http://host.docker.internal:5002` | XTTS streaming server URL |
+
+> All TTS engines fall back to Edge TTS on error.
 
 ## HTTP Endpoints
 
 ### `GET /health`
-
-Returns `{"status":"ok"}` — use for connectivity checks. No auth required.
+Returns `{"status":"ok"}`. No auth required. Use for health checks.
 
 ## WebSocket Protocol
 
-All WebSocket messages are JSON. The client must authenticate within 5 seconds or the connection is closed.
+All messages are JSON over WebSocket on port 3200. The client must authenticate within 5 seconds.
 
 ### Session Management
 
-Sessions persist across WebSocket reconnects. Pass `sessionId` and `lastServerSeq` in the auth message to resume a session. Missed messages are replayed automatically. Sessions expire after 5 minutes of inactivity.
+Sessions persist across reconnects. Pass `sessionId` and `lastServerSeq` in the auth message to resume. Missed messages are replayed automatically. Sessions expire after 5 minutes of inactivity.
 
 ### Client → Server
 
-#### `auth` — Authenticate
-```json
-{"type": "auth", "token": "your-secret-token", "sessionId": "optional-uuid", "lastServerSeq": 0}
-```
-
-#### `audio` — Send voice recording
-```json
-{"type": "audio", "data": "<base64-encoded WAV>", "prefix": "optional context"}
-```
-
-#### `ambient_audio` — Send ambient/always-listening audio
-```json
-{"type": "ambient_audio", "data": "<base64-encoded WAV>"}
-```
-
-#### `text` — Send text message
-```json
-{"type": "text", "text": "What's the weather like?", "prefix": "optional context"}
-```
-
-#### `image` — Send image for vision analysis
-```json
-{"type": "image", "data": "<base64>", "mimeType": "image/jpeg", "text": "What's in this photo?"}
-```
-
-#### `file` — Send text file for analysis
-```json
-{"type": "file", "data": "<base64>", "name": "code.py"}
-```
-
-#### `cancel` — Cancel current response
-```json
-{"type": "cancel"}
-```
-
-#### `barge_in` — Interrupt AI mid-response
-```json
-{"type": "barge_in"}
-```
-Aborts the current LLM stream, tells the client to stop audio playback, and saves the partial response to conversation history (marked as `[interrumpido]`). Use when the user starts speaking while the AI is still responding.
-
-#### `clear_history` — Clear conversation memory
-```json
-{"type": "clear_history"}
-```
-Clears all conversation history for the current session. The server responds with `history_cleared`.
-
-#### `replay` — Replay last audio response
-```json
-{"type": "replay"}
-```
-
-#### `set_bot_name` — Change wake word
-```json
-{"type": "set_bot_name", "name": "friday"}
-```
-
-#### `enroll_audio` — Enroll speaker voice profile
-```json
-{"type": "enroll_audio", "data": "<base64 WAV>", "name": "Pablo", "append": false}
-```
-
-#### `get_profiles` — List enrolled speaker profiles
-```json
-{"type": "get_profiles"}
-```
-
-#### `ping` — Keep-alive
-```json
-{"type": "ping"}
-```
+| Type | Fields | Description |
+|------|--------|-------------|
+| `auth` | `token`, `sessionId?`, `lastServerSeq?`, `clientSeq?` | Authenticate |
+| `audio` | `data` (base64 WAV), `prefix?` | Voice recording for transcription + response |
+| `ambient_audio` | `data` (base64 WAV) | Always-listening mode audio |
+| `text` | `text`, `prefix?` | Text message |
+| `image` | `data` (base64), `mimeType?`, `text?` | Image for vision analysis |
+| `file` | `data` (base64), `name` | Text file for analysis (max 5MB) |
+| `cancel` | — | Cancel current generation |
+| `barge_in` | — | Interrupt AI mid-response, stop playback |
+| `clear_history` | — | Clear conversation memory |
+| `replay` | — | Replay last audio response |
+| `set_bot_name` | `name` | Change wake word |
+| `enroll_audio` | `data` (base64 WAV), `name`, `append?` | Enroll speaker voice profile |
+| `get_profiles` | — | List enrolled speakers |
+| `ping` | — | Keep-alive |
 
 ### Server → Client
 
-#### `auth` — Authentication result
-```json
-{"type": "auth", "status": "ok", "sessionId": "uuid", "serverSeq": 42}
-```
+| Type | Fields | Description |
+|------|--------|-------------|
+| `auth` | `status`, `sessionId`, `serverSeq` | Auth result |
+| `status` | `status` | State: `transcribing` → `thinking` → `speaking` → `idle` |
+| `transcript` | `text` | What Whisper heard |
+| `reply_chunk` | `text`, `index`, `emotion` | One sentence of the AI response |
+| `audio_chunk` | `data` (base64), `index`, `emotion`, `text` | TTS audio for one sentence |
+| `stream_done` | — | All chunks sent |
+| `stop_playback` | — | Stop audio (barge-in) |
+| `history_cleared` | — | Conversation memory cleared |
+| `emotion` | `emotion` | Avatar emotion (first sentence) |
+| `ambient_transcript` | `text`, `speaker`, `isOwner`, `isKnown` | Ambient transcription |
+| `smart_status` | `status` | Ambient status (`listening`, `transcribing`) |
+| `artifact` | `artifactType`, `content`, `language`, `title` | Code blocks |
+| `buttons` | `options[]` | Interactive buttons |
+| `error` | `message` | Error |
+| `pong` | — | Keep-alive response |
 
-#### `status` — Processing state change
-```json
-{"type": "status", "status": "transcribing"}
-```
-Valid statuses: `transcribing`, `thinking`, `speaking`, `idle`
+### Emotions
 
-#### `transcript` — Speech-to-text result
-```json
-{"type": "transcript", "text": "What's the weather like?"}
-```
+Valid emotion tags: `happy`, `sad`, `surprised`, `thinking`, `confused`, `laughing`, `neutral`, `angry`, `love`
 
-#### `reply_chunk` — One sentence of the AI response
-```json
-{"type": "reply_chunk", "text": "It's sunny today!", "index": 0, "emotion": "happy"}
-```
+### Conversation History
 
-#### `audio_chunk` — TTS audio for one sentence
-```json
-{"type": "audio_chunk", "data": "<base64 MP3>", "index": 0, "emotion": "happy", "text": "It's sunny today!"}
-```
-
-#### `stream_done` — All chunks sent
-```json
-{"type": "stream_done"}
-```
-
-#### `stop_playback` — Stop audio playback (barge-in)
-```json
-{"type": "stop_playback"}
-```
-Sent when a barge-in occurs. The client should immediately stop playing any queued audio.
-
-#### `history_cleared` — Conversation history cleared
-```json
-{"type": "history_cleared"}
-```
-
-#### `emotion` — Detected emotion (sent with first sentence)
-```json
-{"type": "emotion", "emotion": "happy"}
-```
-Valid emotions: `happy`, `sad`, `surprised`, `thinking`, `confused`, `laughing`, `neutral`, `angry`, `love`
-
-#### `ambient_transcript` — Ambient mode transcription
-```json
-{"type": "ambient_transcript", "text": "...", "speaker": "Pablo", "isOwner": true, "isKnown": true}
-```
-
-#### `smart_status` — Ambient mode status
-```json
-{"type": "smart_status", "status": "listening"}
-```
-
-#### `artifact` — Code block or large content
-```json
-{"type": "artifact", "artifactType": "code", "content": "...", "language": "python", "title": "python code"}
-```
-
-#### `buttons` — Interactive button options
-```json
-{"type": "buttons", "options": [{"text": "Yes", "value": "yes"}, {"text": "No", "value": "no"}]}
-```
-
-#### `error` — Error message
-```json
-{"type": "error", "message": "No speech detected"}
-```
-
-#### `pong` — Keep-alive response
-```json
-{"type": "pong"}
-```
-
-## Conversation History
-
-The server maintains a sliding window of the last 10 exchanges (user + assistant message pairs) per connection. This gives the AI multi-turn context without unbounded memory growth.
-
-- History is included in every LLM request as preceding messages
-- History persists across WebSocket reconnects via the session store (tied to `sessionId`)
-- Sessions expire after 5 minutes of no connection
-- Send `clear_history` to reset the conversation
-- Barge-in saves the partial response to history (marked `[interrumpido]`) so the AI knows it was cut off
-
-## Barge-in
-
-Barge-in lets the user interrupt the AI mid-response:
-
-1. Client detects the user started speaking while audio is playing
-2. Client sends `{"type": "barge_in"}`
-3. Server aborts the LLM stream and saves the partial response to history
-4. Server sends `{"type": "stop_playback"}` to tell the client to stop audio
-5. Server sends `{"type": "status", "status": "idle"}`
-6. Client can now send the new audio/text as usual
-
-The partial response is recorded in history as `"... [interrumpido]"` so the AI understands it was cut off.
-
-## TTS
-
-The server uses [edge-tts](https://github.com/rany2/edge-tts) to generate speech using Microsoft Edge's neural voices. TTS runs server-side so the Android app doesn't need any TTS engine.
-
-Browse available voices: `edge-tts --list-voices`
+The server keeps a sliding window of the last 10 exchanges per session. History persists across reconnects via `sessionId`. Barge-in saves partial responses marked `[interrumpido]`.
 
 ## Streaming Architecture
 
 ```
-OpenClaw Gateway (SSE) ──tokens──► Sentence Buffer ──sentence──► Edge TTS ──MP3──► WebSocket
-                                        │                           │
-                                        ▼                           ▼
-                                   reply_chunk                 audio_chunk
-                                   (immediate)               (parallel gen)
+Client (Android)
+    │
+    ▼ WebSocket (audio/text)
+┌───────────────────────────────────────────────────────────┐
+│  Voice Server                                             │
+│                                                           │
+│  Audio ──► Whisper ASR ──► Text                           │
+│                              │                            │
+│                              ▼                            │
+│  Text ──────────────► OpenClaw Gateway (SSE streaming)    │
+│                              │                            │
+│                         token buffer                      │
+│                              │                            │
+│                    sentence boundary detected              │
+│                         ╱          ╲                       │
+│                        ▼            ▼                      │
+│                  reply_chunk    TTS engine                 │
+│                  (immediate)   (parallel)                  │
+│                        │            │                      │
+│                        ▼            ▼                      │
+│                  ◄── WebSocket ──► audio_chunk             │
+└───────────────────────────────────────────────────────────┘
 ```
 
-Sentences are detected at `.` `!` `?` boundaries. TTS generation for each sentence runs in parallel with LLM streaming, so the client receives audio for sentence N while sentences N+1, N+2... are still being generated.
+## Troubleshooting
+
+### "Connection refused" from voice-server to whisper-asr
+Whisper takes 30-60s to load the model on first start. Check:
+```bash
+docker compose logs whisper-asr
+```
+
+### Auth token not working
+If `AUTH_TOKEN` is empty in `.env`, a random token is generated each restart. Set a fixed token or copy from logs:
+```bash
+docker compose logs voice-server | grep "Token:"
+```
+
+### No speech detected / garbage transcriptions
+- Check Whisper is running: `curl http://localhost:9000/docs`
+- Try a smaller model (`ASR_MODEL=base`) if running on CPU
+- Ensure audio is valid WAV format
+
+### TTS fails silently
+Edge TTS requires internet access. If running offline, switch to `kokoro` or `xtts`.
+
+### Gateway connection errors
+- Verify OpenClaw is running: `curl http://localhost:18789/health`
+- Check `GATEWAY_TOKEN` matches your OpenClaw config
+- On Linux, `host.docker.internal` may not resolve — use your machine's LAN IP instead
+
+### High memory usage
+- Whisper `large-v3-turbo` needs ~3GB RAM (CPU) or ~2GB VRAM (GPU)
+- Use `ASR_MODEL=small` for lower memory (~1GB)
+- Speaker profiles grow with enrollment — check `/data/speakers` volume

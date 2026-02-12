@@ -36,35 +36,31 @@ Open-source voice assistant app for [OpenClaw](https://github.com/openclaw/openc
 
 ## 🚀 Quick Start
 
-### 1. Start Whisper ASR
-
-```bash
-docker run -d --gpus all -p 9000:9000 \
-  -v whisper-models:/root/.cache \
-  -e ASR_MODEL=large-v3-turbo \
-  -e ASR_ENGINE=faster_whisper \
-  onerahmet/openai-whisper-asr-webservice:latest-gpu
-```
-
-### 2. Start the Bridge Server
+### 1. Start the server (Docker Compose)
 
 ```bash
 cp .env.example .env
-# Edit .env with your values
+# Edit .env — you MUST set GATEWAY_URL and GATEWAY_TOKEN
 
-cd server
-docker build -t openclaw-companion-server .
-docker run -d -p 3200:3200 --env-file ../.env openclaw-companion-server
+# CPU (works everywhere):
+docker compose up -d
+
+# GPU (NVIDIA, much faster transcription):
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-### 3. Build the Android APK
+That's it! The server is now running on port 3200.
 
-**With Docker (no SDK needed):**
+### 2. Build the Android APK
+
+**With Docker (no Android SDK needed):**
 
 ```bash
 cd android
 docker build -t openclaw-companion-apk .
-docker run --rm openclaw-companion-apk > openclaw-companion.apk
+docker create --name apk-tmp openclaw-companion-apk
+docker cp apk-tmp:/project/app/build/outputs/apk/debug/app-debug.apk ./openclaw-companion.apk
+docker rm apk-tmp
 ```
 
 **With Android Studio:**
@@ -73,22 +69,34 @@ docker run --rm openclaw-companion-apk > openclaw-companion.apk
 2. Sync Gradle
 3. Build → Build APK(s)
 
-Install the APK, open the app, go to Settings, and enter your server URL and auth token.
+### 3. Connect
+
+Install the APK, open the app, go to Settings, and enter:
+- **Server URL:** `ws://YOUR-SERVER-IP:3200`
+- **Auth token:** the `AUTH_TOKEN` from your `.env`
 
 ## ⚙️ Configuration
 
-Environment variables for the bridge server:
+All configuration is done via environment variables in `.env`. See [`.env.example`](.env.example) for the full reference.
+
+**Required:**
+
+| Variable | Description |
+|----------|-------------|
+| `GATEWAY_URL` | OpenClaw chat completions endpoint (e.g. `http://host.docker.internal:18789/v1/chat/completions`) |
+| `GATEWAY_TOKEN` | Bearer token for the OpenClaw gateway |
+| `AUTH_TOKEN` | Shared secret between the Android app and server |
+
+**Optional (have sensible defaults):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_TOKEN` | Random (printed at startup) | Shared secret for WebSocket auth |
-| `WHISPER_URL` | `http://localhost:9000/asr?language=es&output=json` | Whisper ASR endpoint |
-| `GATEWAY_URL` | `http://localhost:18789/v1/chat/completions` | OpenClaw chat completions endpoint |
-| `GATEWAY_TOKEN` | — | Bearer token for the OpenClaw gateway |
+| `TTS_ENGINE` | `edge` | TTS engine: `edge` (cloud), `kokoro` (local GPU), `xtts` (local GPU) |
 | `TTS_VOICE` | `es-AR-TomasNeural` | Edge TTS voice ([list voices](https://gist.github.com/BettyJJ/17cbaa1de96235a7f5773b8571a3ea95)) |
-| `BOT_NAME` | `jarvis` | Wake word for ambient/smart-listen mode |
-| `SPEAKER_URL` | `http://127.0.0.1:3201` | Speaker identification service URL |
-| `OWNER_NAME` | `Pablo` | Primary user name (for speaker identification) |
+| `ASR_MODEL` | `small` (CPU) / `large-v3-turbo` (GPU) | Whisper model |
+| `ASR_LANGUAGE` | `es` | Speech recognition language |
+| `BOT_NAME` | `assistant` | Wake word for Smart Listen mode |
+| `OWNER_NAME` | `User` | Primary user name for speaker identification |
 
 ## 📡 WebSocket Protocol
 
@@ -118,10 +126,18 @@ See [server/README.md](server/README.md) for the full protocol reference.
 ## 📂 Project Structure
 
 ```
-├── server/          Bridge server (Node.js + WebSocket)
-├── android/         Android app (Kotlin)
-├── .env.example     Server configuration template
-└── PLAN.md          Development roadmap
+├── docker-compose.yml   One-command server setup
+├── .env.example         Configuration template
+├── server/              Bridge server (Node.js + Python)
+│   ├── index.js         WebSocket server & TTS
+│   ├── speaker_service.py  Speaker identification (Resemblyzer)
+│   ├── Dockerfile
+│   └── README.md        Server docs & protocol reference
+├── android/             Android app (Kotlin)
+│   ├── app/src/main/    App source code
+│   └── Dockerfile       APK build without Android Studio
+├── PLAN.md              Development roadmap
+└── LICENSE              MIT
 ```
 
 ## 🤝 Contributing

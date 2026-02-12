@@ -1,0 +1,57 @@
+###############################################################################
+# OpenClaw Companion — Docker Compose
+#
+# Quick start:
+#   cp .env.example .env   # edit with your values
+#   docker compose up -d   # start all services
+#
+# GPU support (NVIDIA):
+#   docker compose --profile gpu up -d
+#
+# CPU-only (default):
+#   docker compose up -d
+###############################################################################
+
+services:
+  # ─── Voice Server (WebSocket bridge) ──────────────────────────────────────
+  voice-server:
+    build: ./server
+    container_name: openclaw-companion-server
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3200}:3200"
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN:-change-me}
+      - WHISPER_URL=http://whisper-asr:9000/asr?language=${ASR_LANGUAGE:-es}&output=json
+      - GATEWAY_URL=${GATEWAY_URL:?Set GATEWAY_URL to your OpenClaw chat completions endpoint}
+      - GATEWAY_TOKEN=${GATEWAY_TOKEN:?Set GATEWAY_TOKEN to your OpenClaw gateway token}
+      - TTS_ENGINE=${TTS_ENGINE:-edge}
+      - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
+      - BOT_NAME=${BOT_NAME:-assistant}
+      - OWNER_NAME=${OWNER_NAME:-User}
+      - KOKORO_URL=${KOKORO_URL:-}
+      - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
+      - XTTS_URL=${XTTS_URL:-}
+    volumes:
+      - speaker-profiles:/data/speakers
+    depends_on:
+      whisper-asr:
+        condition: service_started
+
+  # ─── Whisper ASR ───────────────────────────────────────────────────────────
+  # CPU by default. For GPU, see docker-compose.gpu.yml override.
+  whisper-asr:
+    image: onerahmet/openai-whisper-asr-webservice:${WHISPER_IMAGE_TAG:-latest}
+    container_name: openclaw-companion-whisper
+    restart: unless-stopped
+    ports:
+      - "${WHISPER_PORT:-9000}:9000"
+    environment:
+      - ASR_MODEL=${ASR_MODEL:-small}
+      - ASR_ENGINE=faster_whisper
+    volumes:
+      - whisper-models:/root/.cache
+
+volumes:
+  speaker-profiles:
+  whisper-models:
