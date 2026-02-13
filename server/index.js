@@ -511,7 +511,9 @@ function gwConnect() {
   if (gwWs) { try { gwWs.close(); } catch {} }
   
   console.log(`🔌 Connecting to Gateway WS: ${GATEWAY_WS_URL}`);
-  gwWs = new WebSocket(GATEWAY_WS_URL);
+  gwWs = new WebSocket(GATEWAY_WS_URL, {
+    headers: { 'Origin': 'http://127.0.0.1:18789' },
+  });
   
   gwWs.on('open', () => {
     console.log('🔌 Gateway WS connected, waiting for challenge...');
@@ -530,9 +532,9 @@ function gwConnect() {
           method: 'connect',
           params: {
             client: {
-              id: 'webchat',
+              id: 'gateway-client',
               displayName: 'OpenClaw Companion Voice Server',
-              mode: 'webchat',
+              mode: 'backend',
               version: '1.0.0',
               platform: 'node',
             },
@@ -541,21 +543,30 @@ function gwConnect() {
             minProtocol: 3,
             maxProtocol: 3,
             auth: { token: GATEWAY_TOKEN },
-            nonce: msg.payload.nonce,
           },
         });
         return;
       }
       
-      // Step 2: Server responds to connect with hello-ok
-      if (msg.type === 'hello-ok') {
+      // Step 2: Server responds with hello-ok (standalone or as RPC res)
+      if (msg.type === 'hello-ok' || (msg.type === 'res' && msg.ok && msg.payload?.type === 'hello-ok')) {
         gwConnected = true;
-        console.log(`✅ Gateway WS authenticated (protocol v${msg.protocol}, server ${msg.server?.version})`);
+        const info = msg.type === 'hello-ok' ? msg : msg.payload;
+        console.log(`✅ Gateway WS authenticated (protocol v${info?.protocol || '?'}, server ${info?.server?.version || '?'})`);
+        if (msg.id) {
+          const pending = gwPendingRequests.get(msg.id);
+          if (pending) { clearTimeout(pending.timeout); gwPendingRequests.delete(msg.id); pending.resolve(msg.payload); }
+        }
         return;
       }
       
-      // Handle RPC responses
+      // Handle RPC responses (including connect success)
       if (msg.type === 'res' && msg.id) {
+        if (!msg.ok) console.log(`🔌 Gateway RPC error: ${JSON.stringify(msg.error)}`);
+        if (msg.ok && !gwConnected) {
+          gwConnected = true;
+          console.log(`✅ Gateway WS connected`);
+        }
         const pending = gwPendingRequests.get(msg.id);
         if (pending) {
           clearTimeout(pending.timeout);
@@ -610,7 +621,7 @@ function gwConnect() {
   
   gwWs.on('close', (code, reason) => {
     gwConnected = false;
-    console.log(`🔌 Gateway WS closed (${code}), reconnecting in 3s...`);
+    console.log(`🔌 Gateway WS closed (${code}, ${reason?.toString() || 'no reason'}), reconnecting in 3s...`);
     gwReconnectTimer = setTimeout(gwConnect, 3000);
   });
   
