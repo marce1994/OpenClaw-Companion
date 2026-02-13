@@ -1,0 +1,54 @@
+.connection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #111827;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85em;
+  color: #9ca3af;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.conn-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: none;
+  font-size: 0.8em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.conn-btn.connect {
+  background: #4f46e5;
+  color: white;
+}
+
+.conn-btn.connect:hover {
+  background: #6366f1;
+}
+
+.conn-btn.connect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.conn-btn.disconnect {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.conn-btn.disconnect:hover {
+  background: rgba(239, 68, 68, 0.3);
+}

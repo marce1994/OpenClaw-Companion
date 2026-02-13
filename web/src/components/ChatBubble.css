@@ -1,0 +1,104 @@
+.bubble-row {
+  display: flex;
+  margin: 8px 16px;
+}
+
+.bubble-row.user {
+  justify-content: flex-end;
+}
+
+.bubble-row.assistant {
+  justify-content: flex-start;
+}
+
+.bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  position: relative;
+  word-wrap: break-word;
+}
+
+.bubble-user {
+  background: #4f46e5;
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.bubble-assistant {
+  background: #1e1e2e;
+  color: #e0e0e0;
+  border-bottom-left-radius: 4px;
+}
+
+.bubble p {
+  margin: 0 0 4px 0;
+}
+
+.bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble a {
+  color: #818cf8;
+}
+
+.bubble code {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.timestamp {
+  display: block;
+  font-size: 0.7em;
+  opacity: 0.5;
+  margin-top: 4px;
+  text-align: right;
+}
+
+.artifact {
+  margin-top: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.artifact-header {
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 0.85em;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.artifact-lang {
+  font-size: 0.8em;
+  opacity: 0.5;
+  text-transform: uppercase;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.inline-button {
+  background: rgba(79, 70, 229, 0.3);
+  border: 1px solid rgba(79, 70, 229, 0.5);
+  color: #c7d2fe;
+  padding: 6px 14px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: all 0.15s;
+}
+
+.inline-button:hover {
+  background: rgba(79, 70, 229, 0.5);
+  border-color: rgba(79, 70, 229, 0.8);
+}

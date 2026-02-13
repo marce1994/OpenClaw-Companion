@@ -14,3 +14,5 @@ server/node_modules/
 
 # Environment (keep .env.example)
 .env
+web/node_modules/
+web/dist/
