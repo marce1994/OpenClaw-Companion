@@ -72,6 +72,39 @@ jobs:
           name: android-apk
           path: OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
 
+  build-web:
+    name: Build Web App
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+      - name: Create archive
+        run: |
+          cd web/dist
+          tar czf ../../OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz
+
   # build-windows:
   #   name: Build Windows EXE
   #   needs: version
@@ -97,7 +130,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [version, build-android]  # add build-windows when ready
+    needs: [version, build-android, build-web]
     runs-on: ubuntu-latest
     steps:
       - name: Download Android APK
@@ -105,10 +138,10 @@ jobs:
         with:
           name: android-apk
 
-      # - name: Download Windows EXE
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: windows-exe
+      - name: Download Web dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -120,7 +153,9 @@ jobs:
             
             ### Downloads
             - **Android**: `OpenClaw-Companion-${{ needs.version.outputs.version }}.apk`
+            - **Web**: `OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz` — extract and serve with any static file server
           files: |
             OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
+            OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz
           draft: false
           prerelease: false
