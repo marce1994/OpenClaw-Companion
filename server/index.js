@@ -3,7 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -11,7 +11,9 @@ const PORT = parseInt(process.env.PORT || '3200', 10);
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'jarvis-voice-' + crypto.randomBytes(8).toString('hex');
 const WHISPER_URL = process.env.WHISPER_URL || 'http://172.18.0.1:9000/asr?language=es&output=json';
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://172.18.0.1:18789/v1/chat/completions';
+const GATEWAY_WS_URL = process.env.GATEWAY_WS_URL || 'ws://172.18.0.1:18789';
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
+const USE_GATEWAY_WS = process.env.USE_GATEWAY_WS !== 'false'; // Default: use WS
 const TTS_VOICE = process.env.TTS_VOICE || 'es-AR-TomasNeural';
 const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge', 'xtts', or 'kokoro'
 const XTTS_URL = process.env.XTTS_URL || 'http://127.0.0.1:5002';
@@ -469,17 +471,206 @@ function extractSearchQuery(text) {
   return q || text.substring(0, 60);
 }
 
+// ─── Gateway WebSocket Client ───────────────────────────────────────────────
+
+/**
+ * Persistent WebSocket connection to the OpenClaw Gateway.
+ * Uses the native webchat protocol (JSON-RPC, protocol v3).
+ * Provides real sessions, persistent history, and proactive message support.
+ */
+let gwWs = null;
+let gwConnected = false;
+let gwReconnectTimer = null;
+let gwRequestId = 0;
+const gwPendingRequests = new Map(); // id → { resolve, reject, timeout }
+const gwChatRunCallbacks = new Map(); // runId → { onDelta, onDone }
+const gwProactiveListeners = new Set(); // Set of (payload) => void
+
+function gwNextId() { return `voice-${++gwRequestId}`; }
+
+function gwSend(obj) {
+  if (gwWs?.readyState === WebSocket.OPEN) {
+    gwWs.send(JSON.stringify(obj));
+  }
+}
+
+/** Send a JSON-RPC request and wait for the response */
+function gwRequest(method, params, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const id = gwNextId();
+    const timer = setTimeout(() => {
+      gwPendingRequests.delete(id);
+      reject(new Error(`Gateway RPC timeout: ${method}`));
+    }, timeoutMs);
+    gwPendingRequests.set(id, { resolve, reject, timeout: timer });
+    gwSend({ type: 'req', id, method, params });
+  });
+}
+
+function gwConnect() {
+  if (gwWs) { try { gwWs.close(); } catch {} }
+  
+  console.log(`🔌 Connecting to Gateway WS: ${GATEWAY_WS_URL}`);
+  gwWs = new WebSocket(GATEWAY_WS_URL);
+  
+  gwWs.on('open', () => {
+    console.log('🔌 Gateway WS connected, waiting for challenge...');
+  });
+  
+  gwWs.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      
+      // Step 1: Server sends connect.challenge
+      if (msg.type === 'event' && msg.event === 'connect.challenge') {
+        console.log('🔌 Got challenge, sending connect...');
+        gwSend({
+          type: 'req',
+          id: gwNextId(),
+          method: 'connect',
+          params: {
+            client: {
+              id: 'webchat',
+              displayName: 'OpenClaw Companion Voice Server',
+              mode: 'webchat',
+              version: '1.0.0',
+              platform: 'node',
+            },
+            role: 'operator',
+            scopes: ['operator.admin'],
+            minProtocol: 3,
+            maxProtocol: 3,
+            auth: { token: GATEWAY_TOKEN },
+            nonce: msg.payload.nonce,
+          },
+        });
+        return;
+      }
+      
+      // Step 2: Server responds to connect with hello-ok
+      if (msg.type === 'hello-ok') {
+        gwConnected = true;
+        console.log(`✅ Gateway WS authenticated (protocol v${msg.protocol}, server ${msg.server?.version})`);
+        return;
+      }
+      
+      // Handle RPC responses
+      if (msg.type === 'res' && msg.id) {
+        const pending = gwPendingRequests.get(msg.id);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          gwPendingRequests.delete(msg.id);
+          if (msg.ok) pending.resolve(msg.payload);
+          else pending.reject(new Error(msg.error?.message || 'Gateway RPC error'));
+        }
+        return;
+      }
+      
+      // Handle agent streaming events
+      if (msg.type === 'event' && msg.event === 'agent') {
+        const p = msg.payload;
+        if (!p?.runId) return;
+        
+        // Look up by runId
+        const cb = gwChatRunCallbacks.get(p.runId);
+        if (!cb) return;
+        
+        if (p.stream === 'assistant' && p.data?.text) {
+          cb.onDelta(p.data.text);
+        } else if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
+          gwChatRunCallbacks.delete(p.runId);
+          cb.onDone(null);
+        } else if (p.stream === 'lifecycle' && p.data?.phase === 'error') {
+          gwChatRunCallbacks.delete(p.runId);
+          cb.onDone(new Error(p.data?.message || 'Agent error'));
+        }
+        return;
+      }
+      
+      // Handle chat events (final text, proactive messages)
+      if (msg.type === 'event' && msg.event === 'chat') {
+        const p = msg.payload;
+        
+        // Proactive messages (not from a run we initiated)
+        if (p.state === 'final' && !gwChatRunCallbacks.has(p.runId)) {
+          const text = p.message?.content?.[0]?.text;
+          if (text) {
+            for (const listener of gwProactiveListeners) {
+              try { listener({ text, sessionKey: p.sessionKey }); } catch {}
+            }
+          }
+        }
+        return;
+      }
+      
+    } catch (e) {
+      console.error('🔌 Gateway WS message parse error:', e.message);
+    }
+  });
+  
+  gwWs.on('close', (code, reason) => {
+    gwConnected = false;
+    console.log(`🔌 Gateway WS closed (${code}), reconnecting in 3s...`);
+    gwReconnectTimer = setTimeout(gwConnect, 3000);
+  });
+  
+  gwWs.on('error', (err) => {
+    console.error('🔌 Gateway WS error:', err.message);
+  });
+}
+
+/**
+ * Send a message via Gateway WebSocket and stream the response.
+ * Returns the runId for cancellation.
+ *
+ * @param {string} message - Text to send
+ * @param {object} opts - { attachments?, sessionKey? }
+ * @param {function} onDelta - Called with each text delta
+ * @param {function} onDone - Called with (error?) when complete
+ * @param {AbortSignal} signal - For cancellation
+ * @returns {Promise<string>} runId
+ */
+async function gwChatSend(message, opts, onDelta, onDone, signal) {
+  const runId = gwNextId();
+  const sessionKey = opts.sessionKey || 'main';
+  
+  // Register callbacks before sending
+  gwChatRunCallbacks.set(runId, { onDelta, onDone });
+  
+  // Handle abort
+  if (signal) {
+    signal.addEventListener('abort', () => {
+      gwChatRunCallbacks.delete(runId);
+      // TODO: send chat.abort if needed
+    }, { once: true });
+  }
+  
+  try {
+    const params = {
+      message,
+      sessionKey,
+      idempotencyKey: runId,
+    };
+    if (opts.attachments) params.attachments = opts.attachments;
+    
+    const result = await gwRequest('chat.send', params, 60000);
+    // The response just confirms the run started, actual content comes via events
+    return result.runId || runId;
+  } catch (e) {
+    gwChatRunCallbacks.delete(runId);
+    onDone(e);
+    return runId;
+  }
+}
+
 // ─── Streaming LLM ─────────────────────────────────────────────────────────
 
 /**
- * Stream a chat completion from the LLM gateway.
+ * Stream a chat completion. Uses Gateway WebSocket if available,
+ * falls back to HTTP chat completions endpoint.
+ *
  * Calls onSentence for each complete sentence detected in the stream,
  * and onDone when the stream finishes (with the full response text).
- *
- * @param {object} opts - { messages: [...] }
- * @param {function} onSentence - Called with each sentence fragment
- * @param {function} onDone - Called with (fullResponse, error?)
- * @param {AbortSignal} signal - For cancellation/barge-in
  */
 async function streamAI(opts, onSentence, onDone, signal) {
   const messages = opts.messages;
@@ -488,6 +679,65 @@ async function streamAI(opts, onSentence, onDone, signal) {
     return;
   }
 
+  // ─── Gateway WebSocket path ───
+  if (USE_GATEWAY_WS && gwConnected) {
+    let buffer = '';
+    let fullResponse = '';
+    
+    // Extract the user message (last message in array)
+    const userMsg = messages[messages.length - 1];
+    const userText = typeof userMsg.content === 'string' 
+      ? userMsg.content 
+      : userMsg.content?.map(c => c.text || '').join(' ') || '';
+    
+    // Build attachments from multimodal content
+    const attachments = [];
+    if (Array.isArray(userMsg.content)) {
+      for (const part of userMsg.content) {
+        if (part.type === 'image_url' && part.image_url?.url) {
+          const match = part.image_url.url.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            attachments.push({
+              type: 'image',
+              mimeType: match[1],
+              content: match[2],
+            });
+          }
+        }
+      }
+    }
+    
+    const onDelta = (deltaText) => {
+      buffer += deltaText;
+      fullResponse += deltaText;
+      
+      // Split on sentence boundaries
+      const sentenceRegex = /^(.*?[.!?])(\s+|\s*\[\[emotion:)/;
+      let match;
+      while ((match = buffer.match(sentenceRegex))) {
+        const sentence = match[1].trim();
+        if (sentence) onSentence(sentence);
+        buffer = buffer.slice(match[1].length).trim();
+      }
+    };
+    
+    const onRunDone = (error) => {
+      if (buffer.trim()) onSentence(buffer.trim());
+      if (error) onDone(fullResponse, error);
+      else onDone(fullResponse);
+    };
+    
+    await gwChatSend(
+      userText,
+      { attachments: attachments.length > 0 ? attachments : undefined },
+      onDelta,
+      onRunDone,
+      signal,
+    );
+    return;
+  }
+
+  // ─── HTTP fallback path (original) ───
   let buffer = '';
   let fullResponse = '';
 
@@ -541,7 +791,6 @@ async function streamAI(opts, onSentence, onDone, signal) {
             buffer += content;
             fullResponse += content;
 
-            // Split on sentence boundaries, also splitting before [[emotion: tags
             const sentenceRegex = /^(.*?[.!?])(\s+|\s*\[\[emotion:)/;
             let match;
             while ((match = buffer.match(sentenceRegex))) {
@@ -1200,5 +1449,14 @@ function handleConnection(ws) {
 wss.on('connection', handleConnection);
 if (wssSecure) wssSecure.on('connection', handleConnection);
 
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`✅ Voice WS server on 0.0.0.0:${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Voice WS server on 0.0.0.0:${PORT}`);
+  // Start Gateway WS connection if enabled
+  if (USE_GATEWAY_WS) {
+    console.log(`🔌 Gateway WS mode enabled, connecting to ${GATEWAY_WS_URL}...`);
+    gwConnect();
+  } else {
+    console.log(`📡 Using HTTP chat completions: ${GATEWAY_URL}`);
+  }
+});
 if (httpsServer) httpsServer.listen(WSS_PORT, '0.0.0.0', () => console.log(`✅ Voice WSS server on 0.0.0.0:${WSS_PORT}`));
