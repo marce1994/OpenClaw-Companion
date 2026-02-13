@@ -1,0 +1,53 @@
+.live2d-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.live2d-canvas {
+  width: 280px;
+  height: 280px;
+  border-radius: 16px;
+  transition: box-shadow 0.3s ease;
+}
+
+.live2d-container.speaking .live2d-canvas {
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4), 0 0 40px rgba(99, 102, 241, 0.2);
+  animation: speaking-glow 1.5s ease-in-out infinite;
+}
+
+.live2d-container.recording .live2d-canvas {
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+  animation: recording-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes speaking-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.3); }
+  50% { box-shadow: 0 0 35px rgba(99, 102, 241, 0.5); }
+}
+
+@keyframes recording-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 35px rgba(239, 68, 68, 0.5); }
+}
+
+.live2d-status {
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: #9ca3af;
+  letter-spacing: 0.5px;
+}
+
+/* Responsive */
+@media (max-height: 600px) {
+  .live2d-canvas {
+    width: 180px;
+    height: 180px;
+  }
+  .live2d-container {
+    padding: 5px 0;
+  }
+}

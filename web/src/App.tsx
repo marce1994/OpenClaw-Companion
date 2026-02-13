@@ -6,6 +6,9 @@ import { ChatInput } from './components/ChatInput';
 import { ConnectionBar } from './components/ConnectionBar';
 import { SettingsModal } from './components/SettingsModal';
 import { AvatarOrb } from './components/AvatarOrb';
+import { Live2DAvatar } from './components/Live2DAvatar';
+import { ModelSelector, AVAILABLE_MODELS } from './components/ModelSelector';
+import type { ModelInfo } from './components/ModelSelector';
 import type { ChatMessage, ServerMessage, AppStatus } from './protocol/types';
 import './App.css';
 
@@ -39,6 +42,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [currentEmotion, setCurrentEmotion] = useState('neutral');
   const [appStatus, setAppStatus] = useState<AppStatus>('idle');
+  const [useLive2D, setUseLive2D] = useState(true);
+  const [currentModel, setCurrentModel] = useState<ModelInfo>(AVAILABLE_MODELS[0]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   
   // Streaming state refs (not reactive to avoid re-renders)
@@ -52,7 +57,7 @@ export default function App() {
   }, [messages]);
 
   // Audio player
-  const { isPlaying, enqueue, stopPlayback } = useAudioPlayer();
+  const { isPlaying, enqueue, stopPlayback, audioRef } = useAudioPlayer();
 
   // Update status based on audio playback
   useEffect(() => {
@@ -262,13 +267,32 @@ export default function App() {
         <button className="header-btn" onClick={handleClearChat} title="Clear chat">
           🗑️
         </button>
+        <button className="header-btn" onClick={() => setUseLive2D(!useLive2D)} title="Toggle avatar mode">
+          {useLive2D ? '🎭' : '🔮'}
+        </button>
         <button className="header-btn" onClick={() => setShowSettings(true)} title="Settings">
           ⚙️
         </button>
       </div>
 
       <div className="main-content">
-        <AvatarOrb emotion={currentEmotion} status={appStatus} isPlaying={isPlaying} />
+        {useLive2D ? (
+          <>
+            <Live2DAvatar
+              emotion={currentEmotion}
+              status={appStatus}
+              isPlaying={isPlaying}
+              audioRef={audioRef}
+              modelPath={currentModel.path}
+            />
+            <ModelSelector
+              currentModelId={currentModel.id}
+              onSelectModel={setCurrentModel}
+            />
+          </>
+        ) : (
+          <AvatarOrb emotion={currentEmotion} status={appStatus} isPlaying={isPlaying} />
+        )}
 
         <div className="chat-area">
           {messages.length === 0 && (

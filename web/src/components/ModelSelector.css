@@ -1,0 +1,28 @@
+.model-selector {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.model-btn {
+  padding: 4px 12px;
+  border: 1px solid #4b5563;
+  border-radius: 12px;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.model-btn:hover {
+  border-color: #818cf8;
+  color: #c7d2fe;
+}
+
+.model-btn.active {
+  border-color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+  color: #c7d2fe;
+}

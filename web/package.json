@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@types/react-syntax-highlighter": "^15.5.13",
+    "pixi-live2d-display": "^0.5.0-beta",
+    "pixi.js": "^7.4.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",

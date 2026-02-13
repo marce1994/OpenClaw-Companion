@@ -141,5 +141,5 @@ export function useAudioPlayer() {
     setIsPlaying(false);
   }, []);
 
-  return { isPlaying, enqueue, stopPlayback };
+  return { isPlaying, enqueue, stopPlayback, audioRef };
 }
