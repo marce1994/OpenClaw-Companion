@@ -13,7 +13,7 @@ const WHISPER_URL = process.env.WHISPER_URL || 'http://172.18.0.1:9000/asr?langu
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://172.18.0.1:18789/v1/chat/completions';
 const GATEWAY_WS_URL = process.env.GATEWAY_WS_URL || 'ws://172.18.0.1:18789';
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
-const USE_GATEWAY_WS = process.env.USE_GATEWAY_WS !== 'false'; // Default: use WS
+const USE_GATEWAY_WS = process.env.USE_GATEWAY_WS === 'true'; // Default: off until debugged
 const TTS_VOICE = process.env.TTS_VOICE || 'es-AR-TomasNeural';
 const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge', 'xtts', or 'kokoro'
 const XTTS_URL = process.env.XTTS_URL || 'http://127.0.0.1:5002';
@@ -484,6 +484,8 @@ let gwReconnectTimer = null;
 let gwRequestId = 0;
 const gwPendingRequests = new Map(); // id → { resolve, reject, timeout }
 const gwChatRunCallbacks = new Map(); // runId → { onDelta, onDone }
+let gwActiveCallback = null; // { onDelta, onDone, sessionKey }
+const GW_SESSION_KEY = process.env.GW_SESSION_KEY || 'voice';
 const gwProactiveListeners = new Set(); // Set of (payload) => void
 
 function gwNextId() { return `voice-${++gwRequestId}`; }
@@ -581,18 +583,18 @@ function gwConnect() {
       if (msg.type === 'event' && msg.event === 'agent') {
         const p = msg.payload;
         if (!p?.runId) return;
+        console.log(`🔌 AGENT: stream=${p.stream} sk=${p.sessionKey} rid=${p.runId?.substring(0,12)} active=${!!gwActiveCallback} text=${(p.data?.text||'').substring(0,40)}`);
+        if (!gwActiveCallback) return;
         
-        // Look up by runId
-        const cb = gwChatRunCallbacks.get(p.runId);
-        if (!cb) return;
+        const cb = gwActiveCallback;
         
         if (p.stream === 'assistant' && p.data?.text) {
           cb.onDelta(p.data.text);
         } else if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-          gwChatRunCallbacks.delete(p.runId);
+          gwActiveCallback = null;
           cb.onDone(null);
         } else if (p.stream === 'lifecycle' && p.data?.phase === 'error') {
-          gwChatRunCallbacks.delete(p.runId);
+          gwActiveCallback = null;
           cb.onDone(new Error(p.data?.message || 'Agent error'));
         }
         return;
@@ -643,16 +645,13 @@ function gwConnect() {
  */
 async function gwChatSend(message, opts, onDelta, onDone, signal) {
   const runId = gwNextId();
-  const sessionKey = opts.sessionKey || 'main';
+  const sessionKey = opts.sessionKey || GW_SESSION_KEY;
   
-  // Register callbacks before sending
-  gwChatRunCallbacks.set(runId, { onDelta, onDone });
+  gwActiveCallback = { onDelta, onDone };
   
-  // Handle abort
   if (signal) {
     signal.addEventListener('abort', () => {
-      gwChatRunCallbacks.delete(runId);
-      // TODO: send chat.abort if needed
+      gwActiveCallback = null;
     }, { once: true });
   }
   
@@ -665,8 +664,18 @@ async function gwChatSend(message, opts, onDelta, onDone, signal) {
     if (opts.attachments) params.attachments = opts.attachments;
     
     const result = await gwRequest('chat.send', params, 60000);
-    // The response just confirms the run started, actual content comes via events
-    return result.runId || runId;
+    console.log(`🔌 chat.send result: ${JSON.stringify(result)}`);
+    // Re-key callbacks to Gateway's runId (different from ours)
+    const gatewayRunId = result.runId || runId;
+    if (gatewayRunId !== runId) {
+      const cb = gwChatRunCallbacks.get(runId);
+      if (cb) {
+        gwChatRunCallbacks.delete(runId);
+        gwChatRunCallbacks.set(gatewayRunId, cb);
+      }
+    }
+    console.log(`🔌 Gateway run started: ${gatewayRunId}`);
+    return gatewayRunId;
   } catch (e) {
     gwChatRunCallbacks.delete(runId);
     onDone(e);
