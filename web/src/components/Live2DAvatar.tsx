@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
-import { Live2DModel, MotionPreloadStrategy } from 'pixi-live2d-display';
+import { Live2DModel, MotionPreloadStrategy } from 'pixi-live2d-display/cubism4';
 import type { AppStatus } from '../protocol/types';
 import './Live2DAvatar.css';
 
