@@ -1,4 +1,5 @@
 // Shared message types — must match server protocol (see docs/ARCHITECTURE.md)
+// Updated to match actual server implementation in server/index.js
 
 // === Client → Server ===
 
@@ -52,50 +53,54 @@ export type ClientMessage =
   | ClearHistoryMessage
   | PingMessage;
 
-// === Server → Client ===
+// === Server → Client (actual protocol) ===
 
-export interface AuthSuccessMessage {
-  type: 'auth_success' | 'auth';
-  status?: string;
+export interface ServerAuthMessage {
+  type: 'auth';
+  status: 'ok';
   sessionId: string;
   serverSeq: number;
   sseq?: number;
 }
 
-export interface TranscriptionMessage {
-  type: 'transcription';
+export interface ReplyChunkMessage {
+  type: 'reply_chunk';
   text: string;
-  sseq: number;
+  index: number;
+  emotion?: string;
+  sseq?: number;
 }
 
-export interface ResponseMessage {
-  type: 'response';
-  text: string;
-  sseq: number;
+export interface AudioChunkMessage {
+  type: 'audio_chunk';
+  data: string; // base64 MP3/WAV
+  index: number;
+  emotion?: string;
+  text?: string;
+  sseq?: number;
 }
 
-export interface ResponseEndMessage {
-  type: 'response_end';
-  sseq: number;
+export interface StreamDoneMessage {
+  type: 'stream_done';
+  sseq?: number;
 }
 
-export interface AudioResponseMessage {
-  type: 'audio';
-  data: string;
-  format: string;
-  sseq: number;
+export interface StatusMessage {
+  type: 'status';
+  status: 'idle' | 'thinking' | 'speaking' | 'transcribing';
+  sseq?: number;
 }
 
 export interface EmotionMessage {
   type: 'emotion';
   emotion: string;
-  sseq: number;
+  sseq?: number;
 }
 
 export interface ErrorMessage {
   type: 'error';
   message: string;
-  sseq: number;
+  sseq?: number;
 }
 
 export interface ArtifactMessage {
@@ -103,37 +108,51 @@ export interface ArtifactMessage {
   title: string;
   language: string;
   content: string;
-  sseq: number;
+  sseq?: number;
 }
 
-export interface ButtonMessage {
-  type: 'button';
-  buttons: Array<{ text: string; callback_data: string }>;
-  sseq: number;
+export interface ButtonsMessage {
+  type: 'buttons';
+  options: Array<{ text: string; callback_data?: string; value?: string }>;
+  sseq?: number;
 }
 
 export interface StopPlaybackMessage {
   type: 'stop_playback';
-  sseq: number;
+  sseq?: number;
+}
+
+export interface TranscriptionMessage {
+  type: 'transcription';
+  text: string;
+  sseq?: number;
 }
 
 export interface PongMessage {
   type: 'pong';
-  sseq: number;
+  sseq?: number;
+}
+
+export interface SmartStatusMessage {
+  type: 'smart_status';
+  status: string;
+  sseq?: number;
 }
 
 export type ServerMessage =
-  | AuthSuccessMessage
-  | TranscriptionMessage
-  | ResponseMessage
-  | ResponseEndMessage
-  | AudioResponseMessage
+  | ServerAuthMessage
+  | ReplyChunkMessage
+  | AudioChunkMessage
+  | StreamDoneMessage
+  | StatusMessage
   | EmotionMessage
   | ErrorMessage
   | ArtifactMessage
-  | ButtonMessage
+  | ButtonsMessage
   | StopPlaybackMessage
-  | PongMessage;
+  | TranscriptionMessage
+  | PongMessage
+  | SmartStatusMessage;
 
 // === Chat UI Types ===
 
@@ -146,11 +165,13 @@ export interface ChatMessage {
   timestamp: number;
   emotion?: string;
   artifact?: { title: string; language: string; content: string };
-  buttons?: Array<{ text: string; callback_data: string }>;
-  audio?: string; // base64
-  audioFormat?: string;
+  buttons?: Array<{ text: string; callback_data?: string; value?: string }>;
 }
 
 // === Connection State ===
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+// === App Status ===
+
+export type AppStatus = 'idle' | 'thinking' | 'speaking' | 'transcribing' | 'recording';

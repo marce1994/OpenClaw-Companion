@@ -5,7 +5,8 @@ import { ChatBubble } from './components/ChatBubble';
 import { ChatInput } from './components/ChatInput';
 import { ConnectionBar } from './components/ConnectionBar';
 import { SettingsModal } from './components/SettingsModal';
-import type { ChatMessage, ServerMessage } from './protocol/types';
+import { AvatarOrb } from './components/AvatarOrb';
+import type { ChatMessage, ServerMessage, AppStatus } from './protocol/types';
 import './App.css';
 
 const STORAGE_KEY_URL = 'oc-server-url';
@@ -20,6 +21,13 @@ function nextId() {
   return `msg-${Date.now()}-${++msgCounter}`;
 }
 
+// Extract emotion tags from text
+function extractEmotion(text: string): { clean: string; emotion: string | null } {
+  const match = text.match(/\[\[emotion:(\w+)\]\]/);
+  const clean = text.replace(/\[\[emotion:\w+\]\]\s*/g, '');
+  return { clean, emotion: match ? match[1] : null };
+}
+
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [serverUrl, setServerUrl] = useState(() =>
@@ -30,9 +38,13 @@ export default function App() {
   );
   const [showSettings, setShowSettings] = useState(false);
   const [currentEmotion, setCurrentEmotion] = useState('neutral');
+  const [appStatus, setAppStatus] = useState<AppStatus>('idle');
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const streamingRef = useRef<string>('');
+  
+  // Streaming state refs (not reactive to avoid re-renders)
+  const streamingTextRef = useRef<string>('');
   const streamingIdRef = useRef<string>('');
+  const streamingChunksRef = useRef<Map<number, string>>(new Map());
 
   // Auto-scroll
   useEffect(() => {
@@ -42,43 +54,68 @@ export default function App() {
   // Audio player
   const { isPlaying, enqueue, stopPlayback } = useAudioPlayer();
 
+  // Update status based on audio playback
+  useEffect(() => {
+    if (isPlaying) setAppStatus('speaking');
+  }, [isPlaying]);
+
   // Handle server messages
   const handleMessage = useCallback(
     (msg: ServerMessage) => {
+      console.log('[MSG]', msg.type, msg);
+      
       switch (msg.type) {
+        case 'auth':
+          // Handled in useWebSocket
+          break;
+
+        case 'status':
+          if (msg.status === 'idle') setAppStatus('idle');
+          else if (msg.status === 'thinking') setAppStatus('thinking');
+          else if (msg.status === 'speaking') setAppStatus('speaking');
+          else if (msg.status === 'transcribing') setAppStatus('transcribing');
+          break;
+
         case 'transcription':
+          // User's speech transcribed
           setMessages((prev) => [
             ...prev,
-            {
-              id: nextId(),
-              role: 'user',
-              text: msg.text,
-              timestamp: Date.now(),
-            },
+            { id: nextId(), role: 'user', text: msg.text, timestamp: Date.now() },
           ]);
           break;
 
-        case 'response': {
-          // Streaming text — accumulate
-          streamingRef.current += msg.text;
-          const text = streamingRef.current;
+        case 'reply_chunk': {
+          // Streaming text response — ordered by index
+          const { clean, emotion } = extractEmotion(msg.text);
+          if (emotion) setCurrentEmotion(emotion);
+          if (msg.emotion) setCurrentEmotion(msg.emotion);
+
+          streamingChunksRef.current.set(msg.index, clean);
+          
+          // Rebuild full text from ordered chunks
+          const chunks = streamingChunksRef.current;
+          let fullText = '';
+          for (let i = 0; i <= Math.max(...chunks.keys()); i++) {
+            if (chunks.has(i)) fullText += chunks.get(i)! + ' ';
+          }
+          fullText = fullText.trim();
 
           setMessages((prev) => {
-            const existing = prev.findIndex((m) => m.id === streamingIdRef.current);
+            const id = streamingIdRef.current || nextId();
+            if (!streamingIdRef.current) streamingIdRef.current = id;
+
             const updated: ChatMessage = {
-              id: streamingIdRef.current || nextId(),
+              id,
               role: 'assistant',
-              text,
+              text: fullText,
               timestamp: Date.now(),
+              emotion: emotion || msg.emotion,
             };
 
-            if (!streamingIdRef.current) {
-              streamingIdRef.current = updated.id;
-            }
-
-            if (existing >= 0) {
+            const idx = prev.findIndex((m) => m.id === id);
+            if (idx >= 0) {
               const copy = [...prev];
-              copy[existing] = updated;
+              copy[idx] = updated;
               return copy;
             }
             return [...prev, updated];
@@ -86,13 +123,18 @@ export default function App() {
           break;
         }
 
-        case 'response_end':
-          streamingRef.current = '';
-          streamingIdRef.current = '';
+        case 'audio_chunk':
+          // TTS audio for a sentence
+          enqueue(msg.data, 'mp3');
+          if (msg.emotion) setCurrentEmotion(msg.emotion);
           break;
 
-        case 'audio':
-          enqueue(msg.data, msg.format);
+        case 'stream_done':
+          // Response complete — reset streaming state
+          streamingTextRef.current = '';
+          streamingIdRef.current = '';
+          streamingChunksRef.current.clear();
+          setAppStatus('idle');
           break;
 
         case 'emotion':
@@ -101,17 +143,12 @@ export default function App() {
 
         case 'artifact':
           setMessages((prev) => {
-            // Attach artifact to last assistant message
             const copy = [...prev];
             for (let i = copy.length - 1; i >= 0; i--) {
               if (copy[i].role === 'assistant') {
                 copy[i] = {
                   ...copy[i],
-                  artifact: {
-                    title: msg.title,
-                    language: msg.language,
-                    content: msg.content,
-                  },
+                  artifact: { title: msg.title, language: msg.language, content: msg.content },
                 };
                 break;
               }
@@ -120,12 +157,12 @@ export default function App() {
           });
           break;
 
-        case 'button':
+        case 'buttons':
           setMessages((prev) => {
             const copy = [...prev];
             for (let i = copy.length - 1; i >= 0; i--) {
               if (copy[i].role === 'assistant') {
-                copy[i] = { ...copy[i], buttons: msg.buttons };
+                copy[i] = { ...copy[i], buttons: msg.options };
                 break;
               }
             }
@@ -140,13 +177,13 @@ export default function App() {
         case 'error':
           setMessages((prev) => [
             ...prev,
-            {
-              id: nextId(),
-              role: 'system',
-              text: `⚠️ ${msg.message}`,
-              timestamp: Date.now(),
-            },
+            { id: nextId(), role: 'system', text: `⚠️ ${msg.message}`, timestamp: Date.now() },
           ]);
+          setAppStatus('idle');
+          break;
+
+        // Ignore pong, smart_status
+        default:
           break;
       }
     },
@@ -168,14 +205,17 @@ export default function App() {
   const handleMicToggle = () => {
     if (isRecording) {
       stopRec();
+      setAppStatus('idle');
     } else {
       startRec();
+      setAppStatus('recording');
     }
   };
 
   const handleBargeIn = () => {
     send({ type: 'barge_in' });
     stopPlayback();
+    setAppStatus('idle');
   };
 
   const handleSendText = (text: string) => {
@@ -187,7 +227,17 @@ export default function App() {
   };
 
   const handleButtonClick = (callbackData: string) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: 'user', text: callbackData, timestamp: Date.now() },
+    ]);
     send({ type: 'text', text: callbackData });
+  };
+
+  const handleClearChat = () => {
+    setMessages([]);
+    send({ type: 'clear_history' });
+    setCurrentEmotion('neutral');
   };
 
   const handleSaveSettings = (url: string, token: string) => {
@@ -209,32 +259,32 @@ export default function App() {
             disconnect();
           }}
         />
-        <button className="settings-btn" onClick={() => setShowSettings(true)}>
+        <button className="header-btn" onClick={handleClearChat} title="Clear chat">
+          🗑️
+        </button>
+        <button className="header-btn" onClick={() => setShowSettings(true)} title="Settings">
           ⚙️
         </button>
       </div>
 
-      <div className="emotion-indicator" title={`Emotion: ${currentEmotion}`}>
-        {currentEmotion !== 'neutral' && (
-          <span className="emotion-badge">{currentEmotion}</span>
-        )}
-      </div>
+      <div className="main-content">
+        <AvatarOrb emotion={currentEmotion} status={appStatus} isPlaying={isPlaying} />
 
-      <div className="chat-area">
-        {messages.length === 0 && (
-          <div className="empty-state">
-            <p>🤖 OpenClaw Companion</p>
-            <p className="empty-hint">Connect to your server and start chatting</p>
-          </div>
-        )}
-        {messages.map((msg) => (
-          <ChatBubble
-            key={msg.id}
-            message={msg}
-            onButtonClick={handleButtonClick}
-          />
-        ))}
-        <div ref={chatEndRef} />
+        <div className="chat-area">
+          {messages.length === 0 && (
+            <div className="empty-state">
+              <p className="empty-hint">Connect and start chatting</p>
+            </div>
+          )}
+          {messages.map((msg) => (
+            <ChatBubble
+              key={msg.id}
+              message={msg}
+              onButtonClick={handleButtonClick}
+            />
+          ))}
+          <div ref={chatEndRef} />
+        </div>
       </div>
 
       <ChatInput

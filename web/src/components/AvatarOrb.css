@@ -1,0 +1,118 @@
+.avatar-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 0 10px;
+  flex-shrink: 0;
+}
+
+.avatar-orb {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background: radial-gradient(circle at 40% 40%, var(--orb-color), #1e1b4b);
+  box-shadow: 0 0 30px var(--orb-glow), inset 0 0 20px rgba(0, 0, 0, 0.3);
+  transition: all 0.5s ease;
+}
+
+.avatar-emoji {
+  font-size: 3rem;
+  z-index: 2;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+  transition: transform 0.3s ease;
+}
+
+.avatar-orb:hover .avatar-emoji {
+  transform: scale(1.1);
+}
+
+/* Animated rings */
+.avatar-rings {
+  position: absolute;
+  inset: -15px;
+  pointer-events: none;
+}
+
+.ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--orb-color);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+/* Active state — pulsing rings when thinking/speaking */
+.avatar-orb.active .ring {
+  opacity: 0.3;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+.avatar-orb.active .ring-1 {
+  animation-delay: 0s;
+}
+
+.avatar-orb.active .ring-2 {
+  animation-delay: 0.5s;
+}
+
+.avatar-orb.active .ring-3 {
+  animation-delay: 1s;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+/* Recording state — red pulsing */
+.avatar-orb.recording {
+  box-shadow: 0 0 40px rgba(239, 68, 68, 0.5), inset 0 0 20px rgba(0, 0, 0, 0.3);
+  animation: recording-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+  0%, 100% {
+    box-shadow: 0 0 30px rgba(239, 68, 68, 0.3), inset 0 0 20px rgba(0, 0, 0, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 50px rgba(239, 68, 68, 0.6), inset 0 0 20px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.avatar-status {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: #9ca3af;
+  letter-spacing: 0.5px;
+  animation: fade-in 0.3s ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Responsive */
+@media (max-height: 600px) {
+  .avatar-container {
+    padding: 10px 0 5px;
+  }
+  .avatar-orb {
+    width: 80px;
+    height: 80px;
+  }
+  .avatar-emoji {
+    font-size: 2rem;
+  }
+}

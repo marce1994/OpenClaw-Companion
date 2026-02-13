@@ -69,7 +69,7 @@ export function ChatBubble({ message, onButtonClick }: Props) {
               <button
                 key={i}
                 className="inline-button"
-                onClick={() => onButtonClick?.(btn.callback_data)}
+                onClick={() => onButtonClick?.(btn.callback_data || btn.value || btn.text)}
               >
                 {btn.text}
               </button>
