@@ -48,6 +48,7 @@ export function useWebSocket({
     wsRef.current = ws;
 
     ws.onopen = () => {
+      console.log('[WS] Connected, sending auth...');
       const auth: any = { type: 'auth', token: tokenRef.current };
       if (sessionIdRef.current) {
         auth.sessionId = sessionIdRef.current;
@@ -65,10 +66,12 @@ export function useWebSocket({
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data) as ServerMessage;
+        console.log('[WS] Received:', msg.type, msg);
 
         if (msg.type === 'auth_success') {
           sessionIdRef.current = msg.sessionId;
           lastSeqRef.current = msg.serverSeq;
+          console.log('[WS] Setting state to connected');
           setState('connected');
         }
 
@@ -78,18 +81,20 @@ export function useWebSocket({
 
         onMessageRef.current(msg);
       } catch (e) {
-        console.error('Failed to parse WS message:', e);
+        console.error('[WS] Failed to parse message:', e);
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+      console.log('[WS] Closed:', ev.code, ev.reason);
       if (pingTimer.current) clearInterval(pingTimer.current);
       if (!mountedRef.current) return;
       setState('disconnected');
       reconnectTimer.current = setTimeout(connect, reconnectInterval);
     };
 
-    ws.onerror = () => {
+    ws.onerror = (ev) => {
+      console.error('[WS] Error:', ev);
       setState('error');
       ws.close();
     };
