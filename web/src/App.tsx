@@ -4,27 +4,19 @@ import { useAudioRecorder, useAudioPlayer } from './hooks/useAudio';
 import { ChatBubble } from './components/ChatBubble';
 import { ChatInput } from './components/ChatInput';
 import { ConnectionBar } from './components/ConnectionBar';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsModal, loadSettings, saveSettings, type AppSettings } from './components/SettingsModal';
 import { AvatarOrb } from './components/AvatarOrb';
-import { Live2DAvatar } from './components/Live2DAvatar';
-import { ModelSelector, AVAILABLE_MODELS } from './components/ModelSelector';
-import type { ModelInfo } from './components/ModelSelector';
 import type { ChatMessage, ServerMessage, AppStatus } from './protocol/types';
 import './App.css';
 
-const STORAGE_KEY_URL = 'oc-server-url';
-const STORAGE_KEY_TOKEN = 'oc-auth-token';
-
-function getStored(key: string, fallback: string) {
-  return localStorage.getItem(key) || fallback;
-}
+import { Live2DAvatar } from './components/Live2DAvatar';
+import { ModelSelector, AVAILABLE_MODELS, type ModelInfo } from './components/ModelSelector';
 
 let msgCounter = 0;
 function nextId() {
   return `msg-${Date.now()}-${++msgCounter}`;
 }
 
-// Extract emotion tags from text
 function extractEmotion(text: string): { clean: string; emotion: string | null } {
   const match = text.match(/\[\[emotion:(\w+)\]\]/);
   const clean = text.replace(/\[\[emotion:\w+\]\]\s*/g, '');
@@ -33,45 +25,30 @@ function extractEmotion(text: string): { clean: string; emotion: string | null }
 
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [serverUrl, setServerUrl] = useState(() =>
-    getStored(STORAGE_KEY_URL, 'ws://localhost:3200')
-  );
-  const [authToken, setAuthToken] = useState(() =>
-    getStored(STORAGE_KEY_TOKEN, '')
-  );
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [currentEmotion, setCurrentEmotion] = useState('neutral');
   const [appStatus, setAppStatus] = useState<AppStatus>('idle');
   const [useLive2D, setUseLive2D] = useState(true);
-  const [currentModel, setCurrentModel] = useState<ModelInfo>(AVAILABLE_MODELS[0]);
+  const [selectedModel, setSelectedModel] = useState<ModelInfo>(AVAILABLE_MODELS[0]);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  
-  // Streaming state refs (not reactive to avoid re-renders)
-  const streamingTextRef = useRef<string>('');
   const streamingIdRef = useRef<string>('');
   const streamingChunksRef = useRef<Map<number, string>>(new Map());
 
-  // Auto-scroll
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Audio player
   const { isPlaying, enqueue, stopPlayback, audioRef } = useAudioPlayer();
 
-  // Update status based on audio playback
   useEffect(() => {
     if (isPlaying) setAppStatus('speaking');
   }, [isPlaying]);
 
-  // Handle server messages
   const handleMessage = useCallback(
     (msg: ServerMessage) => {
-      console.log('[MSG]', msg.type, msg);
-      
       switch (msg.type) {
         case 'auth':
-          // Handled in useWebSocket
           break;
 
         case 'status':
@@ -82,7 +59,6 @@ export default function App() {
           break;
 
         case 'transcription':
-          // User's speech transcribed
           setMessages((prev) => [
             ...prev,
             { id: nextId(), role: 'user', text: msg.text, timestamp: Date.now() },
@@ -90,14 +66,11 @@ export default function App() {
           break;
 
         case 'reply_chunk': {
-          // Streaming text response — ordered by index
           const { clean, emotion } = extractEmotion(msg.text);
           if (emotion) setCurrentEmotion(emotion);
           if (msg.emotion) setCurrentEmotion(msg.emotion);
 
           streamingChunksRef.current.set(msg.index, clean);
-          
-          // Rebuild full text from ordered chunks
           const chunks = streamingChunksRef.current;
           let fullText = '';
           for (let i = 0; i <= Math.max(...chunks.keys()); i++) {
@@ -108,15 +81,10 @@ export default function App() {
           setMessages((prev) => {
             const id = streamingIdRef.current || nextId();
             if (!streamingIdRef.current) streamingIdRef.current = id;
-
             const updated: ChatMessage = {
-              id,
-              role: 'assistant',
-              text: fullText,
-              timestamp: Date.now(),
+              id, role: 'assistant', text: fullText, timestamp: Date.now(),
               emotion: emotion || msg.emotion,
             };
-
             const idx = prev.findIndex((m) => m.id === id);
             if (idx >= 0) {
               const copy = [...prev];
@@ -129,14 +97,11 @@ export default function App() {
         }
 
         case 'audio_chunk':
-          // TTS audio for a sentence
-          enqueue(msg.data, 'mp3');
+          if (settings.autoPlay) enqueue(msg.data, 'mp3');
           if (msg.emotion) setCurrentEmotion(msg.emotion);
           break;
 
         case 'stream_done':
-          // Response complete — reset streaming state
-          streamingTextRef.current = '';
           streamingIdRef.current = '';
           streamingChunksRef.current.clear();
           setAppStatus('idle');
@@ -151,10 +116,7 @@ export default function App() {
             const copy = [...prev];
             for (let i = copy.length - 1; i >= 0; i--) {
               if (copy[i].role === 'assistant') {
-                copy[i] = {
-                  ...copy[i],
-                  artifact: { title: msg.title, language: msg.language, content: msg.content },
-                };
+                copy[i] = { ...copy[i], artifact: { title: msg.title, language: msg.language, content: msg.content } };
                 break;
               }
             }
@@ -187,22 +149,19 @@ export default function App() {
           setAppStatus('idle');
           break;
 
-        // Ignore pong, smart_status
         default:
           break;
       }
     },
-    [enqueue, stopPlayback]
+    [enqueue, stopPlayback, settings.autoPlay]
   );
 
-  // WebSocket
   const { state: connState, send, connect, disconnect } = useWebSocket({
-    url: serverUrl,
-    token: authToken,
+    url: settings.serverUrl,
+    token: settings.authToken,
     onMessage: handleMessage,
   });
 
-  // Audio recorder
   const { isRecording, start: startRec, stop: stopRec } = useAudioRecorder({
     onAudioChunk: (data) => send({ type: 'audio', data }),
   });
@@ -243,15 +202,23 @@ export default function App() {
     setMessages([]);
     send({ type: 'clear_history' });
     setCurrentEmotion('neutral');
+    setAppStatus('idle');
   };
 
-  const handleSaveSettings = (url: string, token: string) => {
-    localStorage.setItem(STORAGE_KEY_URL, url);
-    localStorage.setItem(STORAGE_KEY_TOKEN, token);
-    setServerUrl(url);
-    setAuthToken(token);
-    disconnect();
+  const handleSaveSettings = (newSettings: AppSettings) => {
+    setSettings(newSettings);
+    // If server URL or token changed, reconnect
+    if (newSettings.serverUrl !== settings.serverUrl || newSettings.authToken !== settings.authToken) {
+      disconnect();
+      // Will auto-connect with new settings on next render
+    }
+    // Update bot name on server
+    if (newSettings.botName !== settings.botName) {
+      send({ type: 'set_bot_name' as any, name: newSettings.botName } as any);
+    }
   };
+
+  const isConnected = connState === 'connected';
 
   return (
     <div className="app">
@@ -259,16 +226,19 @@ export default function App() {
         <ConnectionBar
           state={connState}
           onConnect={connect}
-          onDisconnect={() => {
-            stopRec();
-            disconnect();
-          }}
+          onDisconnect={() => { stopRec(); disconnect(); }}
         />
-        <button className="header-btn" onClick={handleClearChat} title="Clear chat">
-          🗑️
-        </button>
-        <button className="header-btn" onClick={() => setUseLive2D(!useLive2D)} title="Toggle avatar mode">
-          {useLive2D ? '🎭' : '🔮'}
+        {messages.length > 0 && (
+          <button className="header-btn" onClick={handleClearChat} title="Clear chat">
+            🗑️
+          </button>
+        )}
+        <button
+          className="header-btn"
+          onClick={() => setUseLive2D(!useLive2D)}
+          title={useLive2D ? 'Switch to Orb' : 'Switch to Live2D'}
+        >
+          {useLive2D ? '🔮' : '🎭'}
         </button>
         <button className="header-btn" onClick={() => setShowSettings(true)} title="Settings">
           ⚙️
@@ -276,30 +246,36 @@ export default function App() {
       </div>
 
       <div className="main-content">
-        {useLive2D ? (
-          <>
-            <Live2DAvatar
-              emotion={currentEmotion}
-              status={appStatus}
-              isPlaying={isPlaying}
-              audioRef={audioRef}
-              modelPath={currentModel.path}
-            />
-            <ModelSelector
-              currentModelId={currentModel.id}
-              onSelectModel={setCurrentModel}
-            />
-          </>
-        ) : (
-          <AvatarOrb emotion={currentEmotion} status={appStatus} isPlaying={isPlaying} />
-        )}
+        {/* Avatar area */}
+        <div className="avatar-area">
+          {useLive2D ? (
+            <>
+              <Live2DAvatar
+                modelPath={selectedModel.path}
+                emotion={currentEmotion}
+                audioRef={audioRef}
+                status={appStatus}
+                isPlaying={isPlaying}
+              />
+              <ModelSelector currentModelId={selectedModel.id} onSelectModel={setSelectedModel} />
+            </>
+          ) : (
+            <AvatarOrb emotion={currentEmotion} status={appStatus} isPlaying={isPlaying} />
+          )}
 
-        <div className="chat-area">
-          {messages.length === 0 && (
-            <div className="empty-state">
-              <p className="empty-hint">Connect and start chatting</p>
+          {/* Status text */}
+          {appStatus !== 'idle' && (
+            <div className="status-text">
+              {appStatus === 'thinking' && '🤔 Thinking...'}
+              {appStatus === 'speaking' && '🔊 Speaking...'}
+              {appStatus === 'transcribing' && '👂 Listening...'}
+              {appStatus === 'recording' && '🔴 Recording...'}
             </div>
           )}
+        </div>
+
+        {/* Chat messages */}
+        <div className="chat-area">
           {messages.map((msg) => (
             <ChatBubble
               key={msg.id}
@@ -315,15 +291,14 @@ export default function App() {
         onSendText={handleSendText}
         onMicToggle={handleMicToggle}
         isRecording={isRecording}
-        isConnected={connState === 'connected'}
+        isConnected={isConnected}
         isPlaying={isPlaying}
         onBargeIn={handleBargeIn}
       />
 
       {showSettings && (
         <SettingsModal
-          serverUrl={serverUrl}
-          authToken={authToken}
+          settings={settings}
           onSave={handleSaveSettings}
           onClose={() => setShowSettings(false)}
         />

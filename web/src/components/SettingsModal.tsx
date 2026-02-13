@@ -1,16 +1,45 @@
 import { useState } from 'react';
 import './SettingsModal.css';
 
-interface Props {
+export interface AppSettings {
   serverUrl: string;
   authToken: string;
-  onSave: (url: string, token: string) => void;
+  botName: string;
+  autoPlay: boolean;
+  listenMode: 'push_to_talk' | 'smart_listen';
+}
+
+interface Props {
+  settings: AppSettings;
+  onSave: (settings: AppSettings) => void;
   onClose: () => void;
 }
 
-export function SettingsModal({ serverUrl, authToken, onSave, onClose }: Props) {
-  const [url, setUrl] = useState(serverUrl);
-  const [token, setToken] = useState(authToken);
+const STORAGE_PREFIX = 'oc-';
+
+export function loadSettings(): AppSettings {
+  return {
+    serverUrl: localStorage.getItem(`${STORAGE_PREFIX}server-url`) || 'ws://localhost:3200',
+    authToken: localStorage.getItem(`${STORAGE_PREFIX}auth-token`) || '',
+    botName: localStorage.getItem(`${STORAGE_PREFIX}bot-name`) || 'Jarvis',
+    autoPlay: localStorage.getItem(`${STORAGE_PREFIX}auto-play`) !== 'false',
+    listenMode: (localStorage.getItem(`${STORAGE_PREFIX}listen-mode`) as any) || 'push_to_talk',
+  };
+}
+
+export function saveSettings(s: AppSettings) {
+  localStorage.setItem(`${STORAGE_PREFIX}server-url`, s.serverUrl);
+  localStorage.setItem(`${STORAGE_PREFIX}auth-token`, s.authToken);
+  localStorage.setItem(`${STORAGE_PREFIX}bot-name`, s.botName);
+  localStorage.setItem(`${STORAGE_PREFIX}auto-play`, String(s.autoPlay));
+  localStorage.setItem(`${STORAGE_PREFIX}listen-mode`, s.listenMode);
+}
+
+export function SettingsModal({ settings, onSave, onClose }: Props) {
+  const [s, setS] = useState<AppSettings>({ ...settings });
+
+  const update = (key: keyof AppSettings, value: any) =>
+    setS((prev) => ({ ...prev, [key]: value }));
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -21,9 +50,9 @@ export function SettingsModal({ serverUrl, authToken, onSave, onClose }: Props) 
           Server URL
           <input
             type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="ws://localhost:3200"
+            value={s.serverUrl}
+            onChange={(e) => update('serverUrl', e.target.value)}
+            placeholder="wss://your-server:3443"
           />
         </label>
 
@@ -31,10 +60,41 @@ export function SettingsModal({ serverUrl, authToken, onSave, onClose }: Props) 
           Auth Token
           <input
             type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
+            value={s.authToken}
+            onChange={(e) => update('authToken', e.target.value)}
             placeholder="your-auth-token"
           />
+        </label>
+
+        <label>
+          Bot Name
+          <input
+            type="text"
+            value={s.botName}
+            onChange={(e) => update('botName', e.target.value)}
+            placeholder="Jarvis"
+          />
+        </label>
+
+        <label className="toggle-label">
+          <span>Auto-play audio</span>
+          <input
+            type="checkbox"
+            checked={s.autoPlay}
+            onChange={(e) => update('autoPlay', e.target.checked)}
+          />
+          <span className="toggle-switch" />
+        </label>
+
+        <label>
+          Listen Mode
+          <select
+            value={s.listenMode}
+            onChange={(e) => update('listenMode', e.target.value)}
+          >
+            <option value="push_to_talk">Push to Talk</option>
+            <option value="smart_listen">Smart Listen</option>
+          </select>
         </label>
 
         <div className="modal-actions">
@@ -44,7 +104,8 @@ export function SettingsModal({ serverUrl, authToken, onSave, onClose }: Props) 
           <button
             className="btn-primary"
             onClick={() => {
-              onSave(url, token);
+              saveSettings(s);
+              onSave(s);
               onClose();
             }}
           >

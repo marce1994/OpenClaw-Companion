@@ -6,6 +6,7 @@
   align-items: center;
   justify-content: center;
   z-index: 100;
+  backdrop-filter: blur(4px);
 }
 
 .modal {
@@ -14,27 +15,30 @@
   border-radius: 16px;
   padding: 24px;
   width: 90%;
-  max-width: 400px;
+  max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
 }
 
 .modal h2 {
-  margin: 0 0 16px 0;
+  margin: 0 0 20px 0;
   color: white;
-  font-size: 1.1em;
+  font-size: 1.2em;
 }
 
 .modal label {
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   color: #9ca3af;
   font-size: 0.85em;
 }
 
-.modal input {
+.modal input[type="text"],
+.modal input[type="password"] {
   display: block;
   width: 100%;
   margin-top: 4px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: rgba(255, 255, 255, 0.05);
@@ -42,26 +46,91 @@
   font-size: 0.95em;
   outline: none;
   box-sizing: border-box;
+  transition: border-color 0.15s;
 }
 
-.modal input:focus {
+.modal input[type="text"]:focus,
+.modal input[type="password"]:focus {
   border-color: #4f46e5;
+}
+
+.modal select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: #2a2a3e;
+  color: white;
+  font-size: 0.95em;
+  outline: none;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.modal select:focus {
+  border-color: #4f46e5;
+}
+
+/* Toggle switch */
+.toggle-label {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.toggle-label input[type="checkbox"] {
+  display: none;
+}
+
+.toggle-switch {
+  width: 44px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle-switch::after {
+  content: '';
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.2s;
+}
+
+.toggle-label input:checked + .toggle-switch {
+  background: #4f46e5;
+}
+
+.toggle-label input:checked + .toggle-switch::after {
+  transform: translateX(20px);
 }
 
 .modal-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-  margin-top: 20px;
+  margin-top: 24px;
 }
 
 .btn-primary {
-  padding: 8px 20px;
+  padding: 10px 24px;
   border-radius: 8px;
   border: none;
   background: #4f46e5;
   color: white;
   cursor: pointer;
+  font-size: 0.9em;
+  transition: background 0.15s;
 }
 
 .btn-primary:hover {
@@ -69,12 +138,13 @@
 }
 
 .btn-secondary {
-  padding: 8px 20px;
+  padding: 10px 24px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   background: transparent;
   color: #9ca3af;
   cursor: pointer;
+  font-size: 0.9em;
 }
 
 .btn-secondary:hover {
