@@ -55,10 +55,11 @@ export type ClientMessage =
 // === Server → Client ===
 
 export interface AuthSuccessMessage {
-  type: 'auth_success';
+  type: 'auth_success' | 'auth';
+  status?: string;
   sessionId: string;
   serverSeq: number;
-  sseq: number;
+  sseq?: number;
 }
 
 export interface TranscriptionMessage {

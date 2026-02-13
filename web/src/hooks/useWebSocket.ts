@@ -68,7 +68,7 @@ export function useWebSocket({
         const msg = JSON.parse(event.data) as ServerMessage;
         console.log('[WS] Received:', msg.type, msg);
 
-        if (msg.type === 'auth_success') {
+        if (msg.type === 'auth_success' || (msg.type === 'auth' && (msg as any).status === 'ok')) {
           sessionIdRef.current = msg.sessionId;
           lastSeqRef.current = msg.serverSeq;
           console.log('[WS] Setting state to connected');
