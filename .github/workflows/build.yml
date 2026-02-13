@@ -1,0 +1,125 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Generate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate version
+        id: version
+        run: |
+          DATE=$(date -u +%Y.%m.%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          COUNT=$(git rev-list --count HEAD)
+          VERSION="${DATE}-${SHORT_SHA}"
+          TAG="v${DATE}.${COUNT}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: ${VERSION} | Tag: ${TAG}"
+
+  build-android:
+    name: Build Android APK
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set version in build.gradle
+        working-directory: android
+        run: |
+          sed -i "s/versionName \".*\"/versionName \"${{ needs.version.outputs.version }}\"/" app/build.gradle
+          COUNT=$(echo "${{ needs.version.outputs.tag }}" | grep -o '[0-9]*$')
+          sed -i "s/versionCode [0-9]*/versionCode ${COUNT}/" app/build.gradle
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: |
+          mv android/app/build/outputs/apk/release/app-release-unsigned.apk \
+             OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
+
+  # build-windows:
+  #   name: Build Windows EXE
+  #   needs: version
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Set up JDK 17
+  #       uses: actions/setup-java@v4
+  #       with:
+  #         java-version: '17'
+  #         distribution: 'temurin'
+  #
+  #     - name: Build Windows executable
+  #       working-directory: desktop
+  #       run: ./gradlew packageExe --no-daemon
+  #
+  #     - name: Upload artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: windows-exe
+  #         path: desktop/build/compose/binaries/main/exe/*.exe
+
+  release:
+    name: Create Release
+    needs: [version, build-android]  # add build-windows when ready
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+
+      # - name: Download Windows EXE
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: windows-exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: "Release ${{ needs.version.outputs.version }}"
+          body: |
+            Automated build from commit ${{ github.sha }}
+            
+            ### Downloads
+            - **Android**: `OpenClaw-Companion-${{ needs.version.outputs.version }}.apk`
+          files: |
+            OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
+          draft: false
+          prerelease: false

@@ -21,6 +21,8 @@ android {
         }
         release {
             minifyEnabled false
+            // Allow unsigned release builds (CI)
+            signingConfig signingConfigs.debug
         }
     }
 
