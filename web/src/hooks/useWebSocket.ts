@@ -24,6 +24,16 @@ export function useWebSocket({
   const pingTimer = useRef<ReturnType<typeof setInterval>>(undefined);
   const mountedRef = useRef(true);
 
+  // Store onMessage in a ref so it doesn't cause reconnection loops
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
+
+  // Store url/token in refs too
+  const urlRef = useRef(url);
+  urlRef.current = url;
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
@@ -34,19 +44,17 @@ export function useWebSocket({
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     setState('connecting');
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(urlRef.current);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Send auth with session resume info
-      const auth: any = { type: 'auth', token };
+      const auth: any = { type: 'auth', token: tokenRef.current };
       if (sessionIdRef.current) {
         auth.sessionId = sessionIdRef.current;
         auth.lastServerSeq = lastSeqRef.current;
       }
       ws.send(JSON.stringify(auth));
 
-      // Start ping interval
       pingTimer.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'ping' }));
@@ -58,19 +66,17 @@ export function useWebSocket({
       try {
         const msg = JSON.parse(event.data) as ServerMessage;
 
-        // Track session and seq
         if (msg.type === 'auth_success') {
           sessionIdRef.current = msg.sessionId;
           lastSeqRef.current = msg.serverSeq;
           setState('connected');
         }
 
-        // Update last received seq
         if ('sseq' in msg && typeof msg.sseq === 'number') {
           lastSeqRef.current = Math.max(lastSeqRef.current, msg.sseq);
         }
 
-        onMessage(msg);
+        onMessageRef.current(msg);
       } catch (e) {
         console.error('Failed to parse WS message:', e);
       }
@@ -80,7 +86,6 @@ export function useWebSocket({
       if (pingTimer.current) clearInterval(pingTimer.current);
       if (!mountedRef.current) return;
       setState('disconnected');
-      // Auto-reconnect
       reconnectTimer.current = setTimeout(connect, reconnectInterval);
     };
 
@@ -88,7 +93,7 @@ export function useWebSocket({
       setState('error');
       ws.close();
     };
-  }, [url, token, onMessage, reconnectInterval, pingInterval]);
+  }, [reconnectInterval, pingInterval]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
