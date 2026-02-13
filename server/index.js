@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
@@ -1008,7 +1009,11 @@ function handleTestEmotions(ws) {
 
 // ─── HTTP + WebSocket Server ────────────────────────────────────────────────
 
-const httpServer = http.createServer((req, res) => {
+const TLS_CERT = process.env.TLS_CERT || '';
+const TLS_KEY = process.env.TLS_KEY || '';
+const WSS_PORT = parseInt(process.env.WSS_PORT || '3443');
+
+const requestHandler = (req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"status":"ok"}');
@@ -1016,11 +1021,30 @@ const httpServer = http.createServer((req, res) => {
     res.writeHead(404);
     res.end('Not found');
   }
-});
+};
+
+const httpServer = http.createServer(requestHandler);
+
+// Optional TLS server for WSS (GitHub Pages requires wss://)
+let httpsServer = null;
+if (TLS_CERT && TLS_KEY && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
+  httpsServer = https.createServer({
+    cert: fs.readFileSync(TLS_CERT),
+    key: fs.readFileSync(TLS_KEY),
+  }, requestHandler);
+  console.log(`🔒 TLS enabled — WSS will listen on port ${WSS_PORT}`);
+}
 
 const wss = new WebSocketServer({ server: httpServer });
 
-wss.on('connection', (ws) => {
+// If TLS is available, also accept WSS connections on the HTTPS server
+let wssSecure = null;
+if (httpsServer) {
+  wssSecure = new WebSocketServer({ server: httpsServer });
+  // Share the same connection handler (set up below after wss.on('connection'))
+}
+
+function handleConnection(ws) {
   console.log('🔌 New WS connection');
   ws._authenticated = false;
   const authTimer = setTimeout(() => { if (!ws._authenticated) ws.close(); }, 5000);
@@ -1171,6 +1195,10 @@ wss.on('connection', (ws) => {
       console.log('🔌 WS disconnected');
     }
   });
-});
+}
+
+wss.on('connection', handleConnection);
+if (wssSecure) wssSecure.on('connection', handleConnection);
 
 httpServer.listen(PORT, '0.0.0.0', () => console.log(`✅ Voice WS server on 0.0.0.0:${PORT}`));
+if (httpsServer) httpsServer.listen(WSS_PORT, '0.0.0.0', () => console.log(`✅ Voice WSS server on 0.0.0.0:${WSS_PORT}`));
