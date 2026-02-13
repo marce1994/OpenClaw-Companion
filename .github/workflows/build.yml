@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   version:
@@ -94,16 +96,33 @@ jobs:
         working-directory: web
         run: npm run build
 
-      - name: Create archive
+      - name: Create release archive
         run: |
           cd web/dist
           tar czf ../../OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz .
 
-      - name: Upload artifact
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: web-dist
           path: OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: build-web
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   # build-windows:
   #   name: Build Windows EXE
@@ -153,7 +172,8 @@ jobs:
             
             ### Downloads
             - **Android**: `OpenClaw-Companion-${{ needs.version.outputs.version }}.apk`
-            - **Web**: `OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz` — extract and serve with any static file server
+            - **Web**: `OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz` (self-hosted)
+            - **Web (live)**: https://marce1994.github.io/OpenClaw-Companion/
           files: |
             OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
             OpenClaw-Companion-Web-${{ needs.version.outputs.version }}.tar.gz
