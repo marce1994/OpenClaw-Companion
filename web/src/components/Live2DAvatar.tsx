@@ -4,7 +4,6 @@ import { Live2DModel, MotionPreloadStrategy } from 'pixi-live2d-display/cubism4'
 import type { AppStatus } from '../protocol/types';
 import './Live2DAvatar.css';
 
-// Register PIXI to window for pixi-live2d-display
 (window as any).PIXI = PIXI;
 
 interface Props {
@@ -12,28 +11,19 @@ interface Props {
   status: AppStatus;
   isPlaying: boolean;
   audioRef: React.RefObject<HTMLAudioElement | null>;
-  modelPath: string;  // e.g. "/OpenClaw-Companion/live2d/Haru/Haru.model3.json"
+  modelPath: string;
 }
 
-// Map our emotion names to Haru's expression files
 const EMOTION_TO_EXPRESSION: Record<string, string> = {
-  happy: 'F01',      // smile
-  sad: 'F03',        // sad/cry
-  surprised: 'F06',  // wide eyes
-  thinking: 'F04',   // serious
-  confused: 'F08',   // worried
-  laughing: 'F05',   // closed-eye smile
-  neutral: '',       // default
-  angry: 'F07',      // angry/blush
-  love: 'F02',       // excited
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  idle: '',
-  thinking: 'Thinking...',
-  speaking: 'Speaking...',
-  transcribing: 'Listening...',
-  recording: '🔴 Recording',
+  happy: 'F01',
+  sad: 'F03',
+  surprised: 'F06',
+  thinking: 'F04',
+  confused: 'F08',
+  laughing: 'F05',
+  neutral: '',
+  angry: 'F07',
+  love: 'F02',
 };
 
 export function Live2DAvatar({ emotion, status, isPlaying, audioRef, modelPath }: Props) {
@@ -46,9 +36,9 @@ export function Live2DAvatar({ emotion, status, isPlaying, audioRef, modelPath }
   const animFrameRef = useRef<number>(0);
   const currentEmotionRef = useRef<string>('neutral');
 
-  // Initialize PIXI app and load model
+  // Create PIXI app once
   useEffect(() => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current || appRef.current) return;
 
     const app = new PIXI.Application({
       view: canvasRef.current,
@@ -58,6 +48,19 @@ export function Live2DAvatar({ emotion, status, isPlaying, audioRef, modelPath }
       antialias: true,
     });
     appRef.current = app;
+
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      app.destroy(true, { children: true });
+      appRef.current = null;
+      modelRef.current = null;
+    };
+  }, []);
+
+  // Load/swap model when modelPath changes (reuse same PIXI app)
+  useEffect(() => {
+    const app = appRef.current;
+    if (!app) return;
 
     let cancelled = false;
 
@@ -72,9 +75,14 @@ export function Live2DAvatar({ emotion, status, isPlaying, audioRef, modelPath }
           return;
         }
 
+        // Remove old model
+        if (modelRef.current) {
+          app.stage.removeChild(modelRef.current);
+          modelRef.current.destroy();
+        }
+
         modelRef.current = model;
 
-        // Scale model to fit canvas
         const scale = Math.min(
           app.screen.width / model.width,
           app.screen.height / model.height
@@ -85,68 +93,47 @@ export function Live2DAvatar({ emotion, status, isPlaying, audioRef, modelPath }
         model.y = app.screen.height / 2;
 
         app.stage.addChild(model as any);
-
-        // Start idle motion
         model.motion('Idle', 0, { priority: 1 });
       } catch (e) {
         console.error('Failed to load Live2D model:', e);
       }
     })();
 
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(animFrameRef.current);
-      if (modelRef.current) {
-        modelRef.current.destroy();
-        modelRef.current = null;
-      }
-      app.destroy(false);
-      appRef.current = null;
-    };
+    return () => { cancelled = true; };
   }, [modelPath]);
 
-  // Handle emotion changes
+  // Emotion changes
   useEffect(() => {
     const model = modelRef.current;
-    if (!model) return;
-    if (emotion === currentEmotionRef.current) return;
+    if (!model || emotion === currentEmotionRef.current) return;
     currentEmotionRef.current = emotion;
 
-    const expressionName = EMOTION_TO_EXPRESSION[emotion];
-    if (expressionName && model.internalModel?.motionManager?.expressionManager) {
+    const exprName = EMOTION_TO_EXPRESSION[emotion];
+    if (exprName && model.internalModel?.motionManager?.expressionManager) {
       const idx = model.internalModel.motionManager.expressionManager.definitions.findIndex(
-        (def: any) => def.Name === expressionName
+        (def: any) => def.Name === exprName
       );
-      if (idx >= 0) {
-        model.expression(idx);
-      }
-    } else if (!expressionName) {
-      // Reset to default expression
+      if (idx >= 0) model.expression(idx);
+    } else if (!exprName) {
       model.expression();
     }
 
-    // Play a tap body motion for emphasis on strong emotions
     if (['surprised', 'angry', 'laughing', 'love'].includes(emotion)) {
       model.motion('TapBody', undefined, { priority: 2 });
     }
   }, [emotion]);
 
-  // Lip sync from audio
+  // Audio analyser setup
   const setupAudioAnalyser = useCallback((audio: HTMLAudioElement) => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext();
-    }
+    if (!audioContextRef.current) audioContextRef.current = new AudioContext();
     const ctx = audioContextRef.current;
 
-    // Reuse existing source for same audio element
     let source = sourceMapRef.current.get(audio);
     if (!source) {
       try {
         source = ctx.createMediaElementSource(audio);
         sourceMapRef.current.set(audio, source);
-      } catch {
-        return; // Already connected
-      }
+      } catch { return; }
     }
 
     const analyser = ctx.createAnalyser();
@@ -157,65 +144,44 @@ export function Live2DAvatar({ emotion, status, isPlaying, audioRef, modelPath }
     analyserRef.current = analyser;
   }, []);
 
-  // Monitor audioRef for lip sync
   useEffect(() => {
-    if (!isPlaying) {
-      analyserRef.current = null;
-      return;
-    }
-
-    const checkAudio = () => {
+    if (!isPlaying) { analyserRef.current = null; return; }
+    const check = () => {
       const audio = audioRef.current;
-      if (audio && !analyserRef.current) {
-        setupAudioAnalyser(audio);
-      }
+      if (audio && !analyserRef.current) setupAudioAnalyser(audio);
     };
-
-    // Check immediately and poll briefly
-    checkAudio();
-    const interval = setInterval(checkAudio, 100);
-    return () => clearInterval(interval);
+    check();
+    const iv = setInterval(check, 100);
+    return () => clearInterval(iv);
   }, [isPlaying, audioRef, setupAudioAnalyser]);
 
-  // Animation loop for lip sync
+  // Lip sync animation loop
   useEffect(() => {
     const animate = () => {
       const model = modelRef.current;
       if (model && analyserRef.current) {
         const data = new Uint8Array(analyserRef.current.frequencyBinCount);
         analyserRef.current.getByteFrequencyData(data);
-
-        // Get average volume from lower frequencies (voice range)
         let sum = 0;
-        const voiceBins = Math.min(32, data.length);
-        for (let i = 0; i < voiceBins; i++) sum += data[i];
-        const avg = sum / voiceBins / 255;
+        const bins = Math.min(32, data.length);
+        for (let i = 0; i < bins; i++) sum += data[i];
+        const mouthValue = Math.min(1, (sum / bins / 255) * 2.5);
 
-        // Map to mouth opening (0-1)
-        const mouthValue = Math.min(1, avg * 2.5);
-
-        // Set mouth parameters directly
-        const coreModel = model.internalModel?.coreModel;
-        if (coreModel) {
-          const paramIdx = coreModel.getParameterIndex?.('ParamMouthOpenY');
-          if (paramIdx !== undefined && paramIdx >= 0) {
-            coreModel.setParameterValueByIndex?.(paramIdx, mouthValue);
-          }
+        const core = model.internalModel?.coreModel;
+        if (core) {
+          const idx = core.getParameterIndex?.('ParamMouthOpenY');
+          if (idx !== undefined && idx >= 0) core.setParameterValueByIndex?.(idx, mouthValue);
         }
       }
       animFrameRef.current = requestAnimationFrame(animate);
     };
-
     animFrameRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animFrameRef.current);
   }, []);
 
-  const statusLabel = STATUS_LABELS[status] || '';
-
   return (
     <div className={`live2d-container ${isPlaying ? 'speaking' : ''} ${status === 'recording' ? 'recording' : ''}`}>
       <canvas ref={canvasRef} className="live2d-canvas" />
-      {statusLabel && <div className="live2d-status">{statusLabel}</div>}
     </div>
   );
 }

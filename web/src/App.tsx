@@ -30,7 +30,7 @@ export default function App() {
   const [currentEmotion, setCurrentEmotion] = useState('neutral');
   const [appStatus, setAppStatus] = useState<AppStatus>('idle');
   const [useLive2D, setUseLive2D] = useState(true);
-  const [selectedModel, setSelectedModel] = useState<ModelInfo>(AVAILABLE_MODELS[0]);
+  const [selectedModel, setSelectedModel] = useState<ModelInfo>(AVAILABLE_MODELS[0]); // Mao
   const chatEndRef = useRef<HTMLDivElement>(null);
   const streamingIdRef = useRef<string>('');
   const streamingChunksRef = useRef<Map<number, string>>(new Map());
