@@ -62,8 +62,9 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv android/app/build/outputs/apk/release/app-release-unsigned.apk \
-             OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
+          APK=$(find android/app/build/outputs/apk/release/ -name '*.apk' | head -1)
+          echo "Found APK: $APK"
+          mv "$APK" OpenClaw-Companion-${{ needs.version.outputs.version }}.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
