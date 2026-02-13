@@ -1,9 +1,10 @@
 # 🐾 OpenClaw Companion
 
-Open-source voice assistant app for [OpenClaw](https://github.com/nichochar/openclaw). Talk to your AI through voice or text from your Android phone, with real-time streaming responses and an animated avatar.
+Your AI, alive. Talk to an animated Live2D avatar through voice or text — Android, Web, and beyond. Powered by [OpenClaw](https://github.com/openclaw/openclaw).
 
-<!-- TODO: Add screenshot/demo GIF here -->
-<!-- ![Demo](docs/demo.gif) -->
+<p align="center">
+  <img src="preview.jpg" alt="OpenClaw Companion — Live2D voice assistant" width="300" />
+</p>
 
 ## ✨ Features
 
