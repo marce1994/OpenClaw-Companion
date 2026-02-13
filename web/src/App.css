@@ -286,6 +286,48 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ===== LIVE2D MODEL PILLS ===== */
+.l2d-models {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.model-pill {
+  padding: 4px 12px;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 14px;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.model-pill:hover {
+  border-color: #818cf8;
+  color: #c7d2fe;
+}
+
+.model-pill.active {
+  border-color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+  color: #c7d2fe;
+}
+
+/* Smart Listen active indicator */
+.side-btn.active {
+  opacity: 1;
+  color: #22c55e;
+  animation: pulse-smart 2s infinite;
+}
+
+@keyframes pulse-smart {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
 /* ===== MOBILE ===== */
 @media (max-width: 480px) {
   .bubble { max-width: 85%; }

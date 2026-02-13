@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { ModelInfo } from './ModelSelector';
 import './SettingsModal.css';
 
 export interface AppSettings {
@@ -7,10 +8,12 @@ export interface AppSettings {
   botName: string;
   autoPlay: boolean;
   listenMode: 'push_to_talk' | 'smart_listen';
+  selectedModel: string;
 }
 
 interface Props {
   settings: AppSettings;
+  models: ModelInfo[];
   onSave: (settings: AppSettings) => void;
   onClose: () => void;
 }
@@ -24,6 +27,7 @@ export function loadSettings(): AppSettings {
     botName: localStorage.getItem(`${STORAGE_PREFIX}bot-name`) || 'Jarvis',
     autoPlay: localStorage.getItem(`${STORAGE_PREFIX}auto-play`) !== 'false',
     listenMode: (localStorage.getItem(`${STORAGE_PREFIX}listen-mode`) as any) || 'push_to_talk',
+    selectedModel: localStorage.getItem(`${STORAGE_PREFIX}model`) || 'mao',
   };
 }
 
@@ -33,84 +37,62 @@ export function saveSettings(s: AppSettings) {
   localStorage.setItem(`${STORAGE_PREFIX}bot-name`, s.botName);
   localStorage.setItem(`${STORAGE_PREFIX}auto-play`, String(s.autoPlay));
   localStorage.setItem(`${STORAGE_PREFIX}listen-mode`, s.listenMode);
+  localStorage.setItem(`${STORAGE_PREFIX}model`, s.selectedModel);
 }
 
-export function SettingsModal({ settings, onSave, onClose }: Props) {
+export function SettingsModal({ settings, models, onSave, onClose }: Props) {
   const [s, setS] = useState<AppSettings>({ ...settings });
 
   const update = (key: keyof AppSettings, value: any) =>
-    setS((prev) => ({ ...prev, [key]: value }));
+    setS(prev => ({ ...prev, [key]: value }));
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
         <h2>⚙️ Settings</h2>
 
         <label>
           Server URL
-          <input
-            type="text"
-            value={s.serverUrl}
-            onChange={(e) => update('serverUrl', e.target.value)}
-            placeholder="wss://your-server:3443"
-          />
+          <input type="text" value={s.serverUrl} onChange={e => update('serverUrl', e.target.value)}
+            placeholder="wss://your-server:3443" />
         </label>
 
         <label>
           Auth Token
-          <input
-            type="password"
-            value={s.authToken}
-            onChange={(e) => update('authToken', e.target.value)}
-            placeholder="your-auth-token"
-          />
+          <input type="password" value={s.authToken} onChange={e => update('authToken', e.target.value)}
+            placeholder="your-auth-token" />
         </label>
 
         <label>
           Bot Name
-          <input
-            type="text"
-            value={s.botName}
-            onChange={(e) => update('botName', e.target.value)}
-            placeholder="Jarvis"
-          />
+          <input type="text" value={s.botName} onChange={e => update('botName', e.target.value)}
+            placeholder="Jarvis" />
+        </label>
+
+        <label>
+          Character
+          <select value={s.selectedModel} onChange={e => update('selectedModel', e.target.value)}>
+            {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
         </label>
 
         <label className="toggle-label">
           <span>Auto-play audio</span>
-          <input
-            type="checkbox"
-            checked={s.autoPlay}
-            onChange={(e) => update('autoPlay', e.target.checked)}
-          />
+          <input type="checkbox" checked={s.autoPlay} onChange={e => update('autoPlay', e.target.checked)} />
           <span className="toggle-switch" />
         </label>
 
         <label>
           Listen Mode
-          <select
-            value={s.listenMode}
-            onChange={(e) => update('listenMode', e.target.value)}
-          >
+          <select value={s.listenMode} onChange={e => update('listenMode', e.target.value)}>
             <option value="push_to_talk">Push to Talk</option>
             <option value="smart_listen">Smart Listen</option>
           </select>
         </label>
 
         <div className="modal-actions">
-          <button className="btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn-primary"
-            onClick={() => {
-              saveSettings(s);
-              onSave(s);
-              onClose();
-            }}
-          >
-            Save
-          </button>
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={() => { saveSettings(s); onSave(s); onClose(); }}>Save</button>
         </div>
       </div>
     </div>
