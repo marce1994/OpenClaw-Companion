@@ -15,6 +15,12 @@ services:
       # Optional: TLS certs for WSS
       # - ./certs/cert.pem:/certs/cert.pem:ro
       # - ./certs/key.pem:/certs/key.pem:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3200/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   whisper:
     image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest}

@@ -11,9 +11,9 @@ try { sharp = require('sharp'); } catch { sharp = null; }
 
 const PORT = parseInt(process.env.PORT || '3200', 10);
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'jarvis-voice-' + crypto.randomBytes(8).toString('hex');
-const WHISPER_URL = process.env.WHISPER_URL || 'http://172.18.0.1:9000/asr?language=es&output=json';
-const GATEWAY_URL = process.env.GATEWAY_URL || 'http://172.18.0.1:18789/v1/chat/completions';
-const GATEWAY_WS_URL = process.env.GATEWAY_WS_URL || 'ws://172.18.0.1:18789';
+const WHISPER_URL = process.env.WHISPER_URL || 'http://127.0.0.1:9000/asr?language=es&output=json';
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://127.0.0.1:18789/v1/chat/completions';
+const GATEWAY_WS_URL = process.env.GATEWAY_WS_URL || 'ws://127.0.0.1:18789';
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
 const USE_GATEWAY_WS = process.env.USE_GATEWAY_WS === 'true'; // Default: off until debugged
 const TTS_VOICE = process.env.TTS_VOICE || 'es-AR-TomasNeural';

@@ -74,38 +74,46 @@ Your AI, alive. Talk to an animated Live2D avatar through voice or text — Andr
 
 ## 🚀 Quick Start
 
-### 1. Start Supporting Services
+### Prerequisites
+- **Docker** with Docker Compose v2 (included in Docker Desktop)
+- **OpenClaw Gateway** running (locally or remote with valid token)
+- **Linux/macOS** or **WSL2** on Windows
+- Optional: **NVIDIA GPU** for faster Whisper and local TTS
 
-```bash
-# Whisper ASR (speech recognition)
-docker run -d --name whisper-asr \
-  --gpus all \
-  -p 9000:9000 \
-  -e ASR_MODEL=large-v3-turbo \
-  onerahmet/openai-whisper-asr-webservice:latest
+### 1. Start the Voice Server (Automated)
 
-# Kokoro TTS (optional, for fast local TTS)
-docker run -d --name kokoro-tts \
-  --gpus all \
-  -p 5004:8080 \
-  ghcr.io/remsky/kokoro-fastapi-gpu:v0.4.2
-```
-
-### 2. Build & Run Voice Server
+The easiest way — run the interactive setup wizard:
 
 ```bash
 cd server
-docker build -t jarvis-voice-img .
-docker run -d --name jarvis-voice \
-  --network host \
-  -e AUTH_TOKEN=my-secret-token \
-  -e GATEWAY_TOKEN=your-gateway-token \
-  -e TTS_ENGINE=kokoro \
-  -v /tmp/speaker-profiles:/data/speakers \
-  jarvis-voice-img
+chmod +x setup.sh
+./setup.sh
 ```
 
-### 3. Install Client
+This will:
+- ✅ Check prerequisites (Docker, Docker Compose)
+- ✅ Guide you through configuration (language, TTS engine, GPU)
+- ✅ Generate `.env` with your settings
+- ✅ Pull Docker images
+- ✅ Start all services (Whisper ASR + Voice Server)
+- ✅ Verify service health
+- ✅ Display connection info
+
+**Expected output:**
+```
+Your Voice Server is ready to connect to OpenClaw Gateway
+
+Connection Information:
+  WebSocket URL:    ws://localhost:3200
+  Auth Token:       [your-token]
+  
+Services:
+  Voice Server:     http://localhost:3200
+  Whisper (STT):    http://localhost:9000
+  Kokoro TTS:       http://localhost:5004 (if enabled)
+```
+
+### 2. Install & Configure Client
 
 **Android** — Build APK with Docker (no SDK needed):
 ```bash
@@ -118,38 +126,64 @@ docker cp $(docker create openclaw-companion-builder):/app/app/build/outputs/apk
 ```bash
 cd web
 npm install && npm run build
-# Deploy dist/ to any static host
+# Deploy dist/ to any static host (Netlify, Vercel, etc.)
 ```
 
-### 4. Configure Client
+### 3. Connect the Client
 
 Open Settings in the app and enter:
 - **Server URL**: `ws://YOUR_SERVER_IP:3200` (or `wss://...` for TLS)
-- **Auth Token**: the `AUTH_TOKEN` you set above
+- **Auth Token**: shown by setup.sh (or check: `docker compose logs voice-server | grep Token`)
+
+### Troubleshooting
+
+If setup fails, check the logs:
+```bash
+cd server
+docker compose logs -f                 # All services
+docker compose logs -f voice-server    # Just voice server
+docker compose logs -f whisper         # Just Whisper ASR
+```
+
+For detailed setup instructions, see [**server/README.md**](server/README.md).
 
 ## 📂 Project Structure
 
 ```
-├── server/                Voice bridge server (Node.js + Python)
-│   ├── index.js           WebSocket server, LLM streaming, TTS
-│   ├── speaker_service.py Speaker ID (Resemblyzer) + web search (DuckDuckGo)
-│   ├── Dockerfile         Server container build
-│   ├── start.sh           Entrypoint (starts Python + Node)
-│   └── README.md          Detailed server setup & WebSocket protocol
-├── android/               Android app (Kotlin)
-│   ├── Dockerfile         Docker-based APK build
-│   └── README.md          Android setup guide
-├── web/                   Web client (React + TypeScript + Vite)
-│   └── README.md          Web client setup guide
-└── README.md              This file
+openclaw-companion/
+├── server/                          Voice bridge server (Node.js + Python)
+│   ├── setup.sh                     🚀 Interactive setup wizard (START HERE)
+│   ├── docker-compose.yml           Services definition (Whisper + Voice Server)
+│   ├── Dockerfile                   Voice server container image
+│   ├── index.js                     WebSocket server, LLM streaming, TTS
+│   ├── speaker_service.py           Speaker ID (Resemblyzer) + web search
+│   ├── start.sh                     Entrypoint (starts Python + Node services)
+│   ├── package.json                 Node.js dependencies
+│   ├── .env.example                 Configuration template
+│   └── README.md                    📖 Detailed server docs & API reference
+├── android/                         Android app (Kotlin + JetpackCompose)
+│   ├── Dockerfile                   Docker-based APK build
+│   ├── build.gradle                 App configuration
+│   └── README.md                    📖 Android setup & build guide
+├── web/                             Web client (React + TypeScript + Vite)
+│   ├── vite.config.ts               Build configuration
+│   ├── src/components               React components
+│   └── README.md                    📖 Web client setup & deployment guide
+└── README.md                        This file
 ```
 
 ## 📖 Documentation
 
-- **[Server README](server/README.md)** — complete server setup, all environment variables, WebSocket protocol reference, troubleshooting
-- **[Android README](android/README.md)** — Android app build, configuration, features
-- **[Web README](web/README.md)** — web client build, deployment, TLS setup
-- **[Architecture](../docs/ARCHITECTURE.md)** — system architecture and WebSocket protocol specification
+**Quick Navigation:**
+- 👉 **Just starting?** → Run `server/setup.sh` (recommended for first-time setup)
+- 🔧 **Server configuration?** → See [**server/README.md**](server/README.md)
+  - All environment variables
+  - WebSocket protocol reference
+  - Troubleshooting & health checks
+  - Advanced TLS setup
+- 📱 **Building the Android app?** → See [**android/README.md**](android/README.md)
+- 🌐 **Building the web client?** → See [**web/README.md**](web/README.md)
+- 🏗️ **Want to understand the architecture?** → See [Architecture](#architecture) above
 
 ## 📄 License
 

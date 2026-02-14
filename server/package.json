@@ -4,6 +4,7 @@
   "description": "Jarvis Voice Assistant - WebSocket Server",
   "main": "index.js",
   "dependencies": {
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "sharp": "^0.32.6"
   }
 }
