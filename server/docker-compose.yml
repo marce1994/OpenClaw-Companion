@@ -1,0 +1,57 @@
+services:
+  voice-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openclaw-voice-server
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      whisper:
+        condition: service_started
+    volumes:
+      - ./data/speakers:/data/speakers
+      # Optional: TLS certs for WSS
+      # - ./certs/cert.pem:/certs/cert.pem:ro
+      # - ./certs/key.pem:/certs/key.pem:ro
+
+  whisper:
+    image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest}
+    container_name: openclaw-whisper
+    restart: unless-stopped
+    ports:
+      - "${WHISPER_PORT:-9000}:9000"
+    environment:
+      - ASR_MODEL=${ASR_MODEL:-large-v3-turbo}
+      - ASR_ENGINE=faster_whisper
+    volumes:
+      - whisper-cache:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Optional: uncomment to use Kokoro local TTS (GPU recommended)
+  # kokoro-tts:
+  #   image: ${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:latest}
+  #   container_name: openclaw-kokoro-tts
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${KOKORO_PORT:-5004}:8080"
+  #   volumes:
+  #     - kokoro-cache:/models
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+
+volumes:
+  whisper-cache:
+  # kokoro-cache:
