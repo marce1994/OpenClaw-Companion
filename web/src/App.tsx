@@ -36,6 +36,7 @@ export default function App() {
   const [lastTranscript, setLastTranscript] = useState('');
   const [lastReply, setLastReply] = useState('');
   const [smartListenActive, setSmartListenActive] = useState(false);
+  const [serverTtsEngine, setServerTtsEngine] = useState<string>('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -133,6 +134,14 @@ export default function App() {
         else if (msg.status === 'stopped') setSmartListenActive(false);
         break;
 
+      case 'settings':
+        if ((msg as any).ttsEngine) setServerTtsEngine((msg as any).ttsEngine);
+        break;
+
+      case 'tts_engine':
+        if ((msg as any).engine) setServerTtsEngine((msg as any).engine);
+        break;
+
       case 'error':
         setMessages(prev => [...prev, { id: nextId(), role: 'system', text: `⚠️ ${msg.message}`, timestamp: Date.now() }]);
         setAppStatus('idle');
@@ -149,6 +158,11 @@ export default function App() {
   });
 
   const isConnected = connState === 'connected';
+
+  // Request server settings on connect
+  useEffect(() => {
+    if (isConnected) send({ type: 'get_settings' } as any);
+  }, [isConnected, send]);
 
   // Smart Listen toggle
   const toggleSmartListen = useCallback(() => {
@@ -195,6 +209,10 @@ export default function App() {
     // Apply model from settings
     const m = AVAILABLE_MODELS.find(x => x.id === s.selectedModel);
     if (m) setSelectedModel(m);
+    // Apply TTS engine change
+    if (s.ttsEngine !== settings.ttsEngine && isConnected) {
+      send({ type: 'set_tts_engine', engine: s.ttsEngine } as any);
+    }
   };
 
   // File/image attachment
@@ -312,7 +330,7 @@ export default function App() {
       )}
 
       {showSettings && (
-        <SettingsModal settings={settings} models={AVAILABLE_MODELS} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />
+        <SettingsModal settings={settings} models={AVAILABLE_MODELS} serverTtsEngine={serverTtsEngine} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />
       )}
     </div>
   );

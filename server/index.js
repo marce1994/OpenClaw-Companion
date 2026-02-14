@@ -15,7 +15,7 @@ const GATEWAY_WS_URL = process.env.GATEWAY_WS_URL || 'ws://172.18.0.1:18789';
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
 const USE_GATEWAY_WS = process.env.USE_GATEWAY_WS === 'true'; // Default: off until debugged
 const TTS_VOICE = process.env.TTS_VOICE || 'es-AR-TomasNeural';
-const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge', 'xtts', or 'kokoro'
+let TTS_ENGINE = process.env.TTS_ENGINE || 'edge'; // 'edge', 'xtts', or 'kokoro'
 const XTTS_URL = process.env.XTTS_URL || 'http://127.0.0.1:5002';
 const KOKORO_URL = process.env.KOKORO_URL || 'http://127.0.0.1:5004';
 const KOKORO_VOICE = process.env.KOKORO_VOICE || 'em_alex';
@@ -170,6 +170,35 @@ async function getSpeakerProfiles() {
   }
 }
 
+async function renameSpeaker(oldName, newName) {
+  try {
+    const resp = await fetch(`${SPEAKER_URL}/rename`, {
+      method: 'POST',
+      headers: { 'X-Old-Name': oldName, 'X-New-Name': newName },
+    });
+    return await resp.json();
+  } catch (e) {
+    console.error('Rename error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Detect self-introductions like "me llamo X", "soy X", "my name is X".
+ * Returns the detected name or null.
+ */
+function detectIntroduction(text) {
+  const patterns = [
+    /(?:me llamo|mi nombre es|soy)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
+    /(?:my name is|i'?m|call me)\s+([A-Z][a-z]+)/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 // ─── Web Search ─────────────────────────────────────────────────────────────
 
 async function webSearch(query, maxResults = 5) {
@@ -257,7 +286,7 @@ function isGarbageTranscription(text) {
  * - 'kokoro': Kokoro TTS (local GPU, fastest, ~400ms on RTX 3090, no voice cloning)
  * @returns {Buffer} Audio data (MP3 for edge, WAV for xtts/kokoro)
  */
-function generateTTS(text) {
+async function generateTTS(text) {
   if (TTS_ENGINE === 'kokoro') return generateTTS_Kokoro(text);
   if (TTS_ENGINE === 'xtts') return generateTTS_XTTS(text);
   return generateTTS_Edge(text);
@@ -301,14 +330,16 @@ function generateTTS_XTTS(text) {
 }
 
 /** Kokoro TTS — local GPU, fastest option (~400ms on RTX 3090) */
-function generateTTS_Kokoro(text) {
+async function generateTTS_Kokoro(text) {
   try {
-    const payload = JSON.stringify({ text, voice: KOKORO_VOICE, speed: 1.0 });
-    const res = execSync(
-      `curl -s --max-time 15 -X POST "${KOKORO_URL}/tts" -H "Content-Type: application/json" -d '${payload.replace(/'/g, "'\\''")}'`,
-      { timeout: 20000, maxBuffer: 10 * 1024 * 1024 }
-    );
-    return res; // WAV audio
+    const resp = await fetch(`${KOKORO_URL}/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice: KOKORO_VOICE, speed: 1.0 }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) throw new Error(`Kokoro HTTP ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
   } catch (e) {
     console.error('Kokoro TTS error, falling back to Edge:', e.message);
     return generateTTS_Edge(text);
@@ -483,12 +514,12 @@ let gwConnected = false;
 let gwReconnectTimer = null;
 let gwRequestId = 0;
 const gwPendingRequests = new Map(); // id → { resolve, reject, timeout }
-const gwChatRunCallbacks = new Map(); // runId → { onDelta, onDone }
-let gwActiveCallback = null; // { onDelta, onDone, sessionKey }
+const gwChatRunCallbacks = new Map(); // clientRunId → { onDelta, onDone, prevText }
+let gwActiveRun = null; // { clientRunId, onDelta, onDone, prevText } — current active run
 const GW_SESSION_KEY = process.env.GW_SESSION_KEY || 'voice';
 const gwProactiveListeners = new Set(); // Set of (payload) => void
 
-function gwNextId() { return `voice-${++gwRequestId}`; }
+function gwNextId() { return `voice-${++gwRequestId}-${crypto.randomUUID().substring(0,8)}`; }
 
 function gwSend(obj) {
   if (gwWs?.readyState === WebSocket.OPEN) {
@@ -583,18 +614,33 @@ function gwConnect() {
       if (msg.type === 'event' && msg.event === 'agent') {
         const p = msg.payload;
         if (!p?.runId) return;
-        console.log(`🔌 AGENT: stream=${p.stream} sk=${p.sessionKey} rid=${p.runId?.substring(0,12)} active=${!!gwActiveCallback} text=${(p.data?.text||'').substring(0,40)}`);
-        if (!gwActiveCallback) return;
+        if (!gwActiveRun) return;
+        const cb = gwActiveRun;
         
-        const cb = gwActiveCallback;
+        // Lock onto lifecycle:start for our voice session
+        if (!cb.gatewayRunId) {
+          if (p.stream === 'lifecycle' && p.data?.phase === 'start') {
+            const sk = p.sessionKey || '';
+            if (sk === GW_SESSION_KEY || sk.includes(`:${GW_SESSION_KEY}:`)) {
+              cb.gatewayRunId = p.runId;
+              console.log(`🔌 Locked runId: ${p.runId.substring(0,12)} sk=${sk}`);
+            }
+          }
+          return;
+        }
+        if (p.runId !== cb.gatewayRunId) return;
         
         if (p.stream === 'assistant' && p.data?.text) {
-          cb.onDelta(p.data.text);
+          // Gateway sends cumulative text — extract only the new part
+          const fullText = p.data.text;
+          const newText = fullText.substring(cb.prevText?.length || 0);
+          cb.prevText = fullText;
+          if (newText) cb.onDelta(newText);
         } else if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-          gwActiveCallback = null;
+          gwActiveRun = null;
           cb.onDone(null);
         } else if (p.stream === 'lifecycle' && p.data?.phase === 'error') {
-          gwActiveCallback = null;
+          gwActiveRun = null;
           cb.onDone(new Error(p.data?.message || 'Agent error'));
         }
         return;
@@ -647,11 +693,12 @@ async function gwChatSend(message, opts, onDelta, onDone, signal) {
   const runId = gwNextId();
   const sessionKey = opts.sessionKey || GW_SESSION_KEY;
   
-  gwActiveCallback = { onDelta, onDone };
+  // Set as active run
+  gwActiveRun = { clientRunId: runId, gatewayRunId: null, onDelta, onDone, prevText: '', sentAt: Date.now() };
   
   if (signal) {
     signal.addEventListener('abort', () => {
-      gwActiveCallback = null;
+      if (gwActiveRun?.clientRunId === runId) gwActiveRun = null;
     }, { once: true });
   }
   
@@ -665,19 +712,9 @@ async function gwChatSend(message, opts, onDelta, onDone, signal) {
     
     const result = await gwRequest('chat.send', params, 60000);
     console.log(`🔌 chat.send result: ${JSON.stringify(result)}`);
-    // Re-key callbacks to Gateway's runId (different from ours)
-    const gatewayRunId = result.runId || runId;
-    if (gatewayRunId !== runId) {
-      const cb = gwChatRunCallbacks.get(runId);
-      if (cb) {
-        gwChatRunCallbacks.delete(runId);
-        gwChatRunCallbacks.set(gatewayRunId, cb);
-      }
-    }
-    console.log(`🔌 Gateway run started: ${gatewayRunId}`);
-    return gatewayRunId;
+    return runId;
   } catch (e) {
-    gwChatRunCallbacks.delete(runId);
+    if (gwActiveRun?.clientRunId === runId) gwActiveRun = null;
     onDone(e);
     return runId;
   }
@@ -935,7 +972,7 @@ async function handleTextMessage(ws, text, prefix) {
       // Generate TTS concurrently per sentence — chunks are sent as they're ready
       const ttsPromise = (async () => {
         try {
-          const audioData = generateTTS(cleanSentence);
+          const audioData = await generateTTS(cleanSentence);
           if (audioData && !ac.signal.aborted) {
             send(ws, { type: 'audio_chunk', data: audioData.toString('base64'), index: idx, emotion, text: cleanSentence });
             console.log(`🔊 Chunk ${idx} OK [${emotion}]`);
@@ -1024,7 +1061,7 @@ function handleMultimodalMessage(ws, messages, logPrefix, userContentForHistory)
 
       const ttsPromise = (async () => {
         try {
-          const audioData = generateTTS(cleanSentence);
+          const audioData = await generateTTS(cleanSentence);
           if (audioData && !ac.signal.aborted) {
             send(ws, { type: 'audio_chunk', data: audioData.toString('base64'), index: idx, emotion, text: cleanSentence });
             console.log(`🔊 Chunk ${idx} OK [${emotion}]`);
@@ -1201,15 +1238,26 @@ async function handleAmbientAudio(ws, audioBase64) {
     const speaker = speakerInfo?.speaker || 'Unknown';
     const isKnown = speakerInfo?.known || false;
     const hasProfiles = speakerInfo?.hasProfiles ?? true;
-    const isOwner = hasProfiles ? (speaker === OWNER_NAME) : true;
+    const autoEnrolling = speakerInfo?.autoEnrolling || false;
+    const isOwner = (speaker === OWNER_NAME) || (!hasProfiles && !autoEnrolling);
 
-    console.log(`🎧 [${speaker}${isOwner ? ' 👑' : ''}${!hasProfiles ? ' (no-enroll)' : ''}]: "${text}"`);
+    // Detect self-introduction and rename unknown speakers
+    const introName = detectIntroduction(text);
+    if (introName && !isKnown && speaker.startsWith('Speaker_')) {
+      console.log(`📝 Introduction detected: ${speaker} → ${introName}`);
+      await renameSpeaker(speaker, introName);
+      // Update local vars for this request
+      Object.assign(speakerInfo, { speaker: introName, known: true });
+    }
+    const finalSpeaker = speakerInfo?.speaker || speaker;
 
-    send(ws, { type: 'ambient_transcript', text, speaker, isOwner, isKnown });
+    console.log(`🎧 [${finalSpeaker}${isOwner ? ' 👑' : ''}${autoEnrolling ? ` (enrolling ${speakerInfo.samples}/${speakerInfo.needed})` : ''}]: "${text}"`);
+
+    send(ws, { type: 'ambient_transcript', text, speaker: finalSpeaker, isOwner, isKnown });
 
     // Maintain ambient context window (last 5 minutes)
     if (!ws._ambientContext) ws._ambientContext = [];
-    ws._ambientContext.push({ text, speaker, isOwner, time: Date.now() });
+    ws._ambientContext.push({ text, speaker: finalSpeaker, isOwner, time: Date.now() });
     const fiveMinAgo = Date.now() - 5 * 60 * 1000;
     ws._ambientContext = ws._ambientContext
       .filter(c => c.time > fiveMinAgo)
@@ -1232,11 +1280,11 @@ async function handleAmbientAudio(ws, audioBase64) {
         ).join('\n')}\n]\n\n`;
       }
 
-      const speakerLabel = isOwner ? `${speaker} (your owner)` : speaker;
+      const speakerLabel = isOwner ? `${finalSpeaker} (your owner)` : finalSpeaker;
       const fullPrompt = contextPrompt + `[${speakerLabel} just said: "${text}"]`;
 
       send(ws, { type: 'status', status: 'thinking' });
-      send(ws, { type: 'transcript', text: `[${speaker}] ${text}` });
+      send(ws, { type: 'transcript', text: `[${finalSpeaker}] ${text}` });
       handleTextMessage(ws, fullPrompt, '');
     } else {
       send(ws, { type: 'smart_status', status: 'listening' });
@@ -1249,7 +1297,7 @@ async function handleAmbientAudio(ws, audioBase64) {
 
 // ─── Test / Demo ────────────────────────────────────────────────────────────
 
-function handleTestEmotions(ws) {
+async function handleTestEmotions(ws) {
   console.log('🎭 Emotion demo!');
   const testCues = [
     { startMs: 0, endMs: 2500, text: '¡Hola! Soy feliz de verte.', emotion: 'happy' },
@@ -1267,7 +1315,7 @@ function handleTestEmotions(ws) {
     send(ws, { type: 'reply', text: '🎭 Demo de emociones' });
     send(ws, { type: 'status', status: 'speaking' });
     send(ws, { type: 'emotion_cues', cues: testCues });
-    const audio = generateTTS(fullText);
+    const audio = await generateTTS(fullText);
     if (audio) send(ws, { type: 'audio', data: audio.toString('base64') });
     send(ws, { type: 'status', status: 'idle' });
   } catch (e) {
@@ -1403,8 +1451,42 @@ function handleConnection(ws) {
 
       case 'get_profiles':
         getSpeakerProfiles().then(result => {
-          send(ws, { type: 'profiles', profiles: result.profiles, count: result.count });
+          send(ws, { type: 'profiles', profiles: result.profiles, count: result.count, ownerEnrolled: result.ownerEnrolled });
         });
+        break;
+
+      case 'rename_speaker':
+        if (msg.oldName && msg.newName) {
+          renameSpeaker(msg.oldName, msg.newName).then(result => {
+            if (result?.status === 'renamed') {
+              send(ws, { type: 'rename_result', status: 'ok', old: msg.oldName, new: msg.newName });
+            } else {
+              send(ws, { type: 'rename_result', status: 'error', message: result?.error || 'Failed' });
+            }
+          });
+        }
+        break;
+
+      case 'reset_speakers':
+        fetch(`${SPEAKER_URL}/reset`, { method: 'POST' }).then(() => {
+          send(ws, { type: 'reset_result', status: 'ok' });
+        }).catch(() => {
+          send(ws, { type: 'reset_result', status: 'error' });
+        });
+        break;
+
+      case 'set_tts_engine':
+        if (msg.engine && ['edge', 'kokoro', 'xtts'].includes(msg.engine)) {
+          TTS_ENGINE = msg.engine;
+          console.log(`🔊 TTS engine changed to: ${TTS_ENGINE}`);
+          send(ws, { type: 'tts_engine', engine: TTS_ENGINE, status: 'ok' });
+        } else {
+          send(ws, { type: 'tts_engine', engine: TTS_ENGINE, status: 'error', message: 'Invalid engine. Use: edge, kokoro, xtts' });
+        }
+        break;
+
+      case 'get_settings':
+        send(ws, { type: 'settings', ttsEngine: TTS_ENGINE, ttsEngines: ['kokoro', 'edge', 'xtts'], botName: BOT_NAME, ownerName: OWNER_NAME });
         break;
 
       case 'text':

@@ -141,6 +141,9 @@ class MainActivity : Activity() {
     private lateinit var swVibrate: android.widget.Switch
     private lateinit var settingsPanel: View
     private lateinit var spinnerSkin: Spinner
+    private lateinit var spinnerTtsEngine: Spinner
+    private val ttsEngineOptions = listOf("🔊 Kokoro (Local GPU)", "☁️ Edge TTS (Cloud)", "🎙️ XTTS v2 (Voice Clone)")
+    private val ttsEngineIds = listOf("kokoro", "edge", "xtts")
     private lateinit var prefs: SharedPreferences
 
     private var webSocket: WebSocket? = null
@@ -346,6 +349,15 @@ class MainActivity : Activity() {
         listenMode = savedMode
         spinnerListenMode.setSelection(if (savedMode == "smart_listen") 1 else 0)
 
+        // TTS Engine spinner
+        spinnerTtsEngine = findViewById(R.id.spinnerTtsEngine)
+        val ttsEngineAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, ttsEngineOptions)
+        ttsEngineAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinnerTtsEngine.adapter = ttsEngineAdapter
+        val savedEngine = prefs.getString("tts_engine", "kokoro") ?: "kokoro"
+        val engineIdx = ttsEngineIds.indexOf(savedEngine)
+        if (engineIdx >= 0) spinnerTtsEngine.setSelection(engineIdx)
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
@@ -416,7 +428,11 @@ class MainActivity : Activity() {
                 .putBoolean("vibrate", swVibrate.isChecked)
                 .putString("skin", selectedSkin)
                 .putString("listen_mode", if (spinnerListenMode.selectedItemPosition == 1) "smart_listen" else "push_to_talk")
+                .putString("tts_engine", ttsEngineIds[spinnerTtsEngine.selectedItemPosition])
                 .apply()
+            // Send TTS engine change to server
+            val selectedEngine = ttsEngineIds[spinnerTtsEngine.selectedItemPosition]
+            webSocket?.send("""{"type":"set_tts_engine","engine":"$selectedEngine"}""")
             val newMode = if (spinnerListenMode.selectedItemPosition == 1) "smart_listen" else "push_to_talk"
             val modeChanged = listenMode != newMode
             listenMode = newMode

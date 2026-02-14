@@ -490,6 +490,20 @@
             android:layout_marginBottom="24dp"
             android:backgroundTint="#AAAAAA" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="TTS Engine"
+            android:textColor="#88AAAAAA"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/spinnerTtsEngine"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
+            android:backgroundTint="#AAAAAA" />
+
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
