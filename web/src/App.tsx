@@ -313,7 +313,7 @@ export default function App() {
             <Live2DAvatar modelPath={selectedModel.path} emotion={currentEmotion}
               audioRef={audioRef} status={appStatus} isPlaying={isPlaying} />
           </div>
-          <div className="l2d-bottom-overlay">
+          <div className="l2d-chat-overlay">
             {/* Model selector as horizontal scroll */}
             <div className="l2d-models">
               {AVAILABLE_MODELS.map(m => (
@@ -321,9 +321,11 @@ export default function App() {
                   onClick={() => setSelectedModel(m)}>{m.name}</button>
               ))}
             </div>
+            <div className="l2d-chat-scroll">
+              {messages.map(msg => <ChatBubble key={msg.id} message={msg} onButtonClick={handleButtonClick} />)}
+              <div ref={chatEndRef} />
+            </div>
             {statusText && <div className="l2d-status">{statusText}</div>}
-            {lastTranscript && <div className="l2d-transcript">{lastTranscript}</div>}
-            {lastReply && <div className="l2d-reply">{lastReply.length > 200 ? lastReply.slice(-200) + '...' : lastReply}</div>}
             {renderControls()}
           </div>
         </div>
