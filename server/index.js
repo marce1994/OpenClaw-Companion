@@ -249,28 +249,60 @@ async function transcribe(audio) {
     }
   }
 
-  // Original API (/asr)
+  // Original API (/asr) — use output=json for confidence data
+  const whisperUrl = WHISPER_URL.includes('output=') ? WHISPER_URL : WHISPER_URL + '&output=json';
   const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="audio_file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`);
   const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
   const body = Buffer.concat([header, audio, footer]);
-  const res = await httpReq(WHISPER_URL, {
+  const res = await httpReq(whisperUrl, {
     method: 'POST',
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
   }, body);
   if (_whisperApi !== 'original') { _whisperApi = 'original'; console.log('🎤 Using original Whisper API (/asr)'); }
-  return JSON.parse(res.body.toString()).text || '';
+  const parsed = JSON.parse(res.body.toString());
+  
+  // Check segment confidence to filter Whisper hallucinations
+  if (parsed.segments && parsed.segments.length > 0) {
+    const seg = parsed.segments[0];
+    const logprob = seg.avg_logprob ?? 0;
+    const compression = seg.compression_ratio ?? 1;
+    const noSpeech = seg.no_speech_prob ?? 0;
+    // Low confidence hallucination: low logprob + very short duration + low compression
+    if (logprob < -0.5 && compression < 0.8) {
+      console.log(`🚫 Whisper hallucination filtered: "${parsed.text}" (logprob=${logprob.toFixed(2)}, compression=${compression.toFixed(2)}, no_speech=${noSpeech.toFixed(4)})`);
+      return '';
+    }
+    // Also filter if avg_logprob is very low (model very uncertain)
+    if (logprob < -0.8) {
+      console.log(`🚫 Whisper low confidence filtered: "${parsed.text}" (logprob=${logprob.toFixed(2)})`);
+      return '';
+    }
+  }
+  
+  return parsed.text || '';
 }
 
 /** Filter out Whisper hallucinations and garbage transcriptions */
 function isGarbageTranscription(text) {
   const t = text.trim();
   if (t.length < 2) return true;
+  
+  // Common Whisper hallucinations on background noise/silence
+  const hallucinations = /^[\s¡!¿?]*(?:gracias|suscr[íi]bete|thanks|thank you|subscribe|like and subscribe|subtitulos|subt[íi]tulos realizados|amara\.org|www\.|http|música|aplausos|risas|\[.*\]|\(.*\))[\s.!¡¿?]*$/i;
+  if (hallucinations.test(t)) return true;
+  
+  // Very short + common hallucination words
+  const shortHallucinations = /^[\s¡!¿?]*(?:sí|no|ok|ay|ah|oh|uh|eh|mm|hmm|gracias|hola|adiós|bye|chau)[\s.!¡¿?]*$/i;
+  if (shortHallucinations.test(t) && t.length < 15) return true;
+  
   const words = t.split(/\s+/);
   if (words.length < 2) return false;
   const nonsense = /(?:psychiatric|exchange|itísmo|oxpor|lunar bar|virgen hay una casa)/i;
   if (nonsense.test(t)) return true;
   const unique = new Set(words.map(w => w.toLowerCase()));
   if (words.length > 8 && unique.size / words.length < 0.4) return true;
+  // Repetitive short phrases (e.g. "Gracias. Gracias. Gracias.")
+  if (words.length >= 2 && unique.size <= 2) return true;
   // Mixed languages (Spanish + random English = likely hallucination)
   const englishWords = t.match(/\b(?:the|is|are|was|were|have|has|this|that|with|from|they|their|there|which|would|could|should|about|been|into|than|just|over|also|after|before|between|through)\b/gi);
   const spanishWords = t.match(/\b(?:que|los|las|del|por|una|con|para|como|más|pero|hay|está|son|tiene|puede|este|esta|ese|esa|todo|muy|bien|sin|sobre|entre)\b/gi);

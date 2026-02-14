@@ -110,7 +110,8 @@ class MainActivity : Activity() {
     @Volatile private var smartPaused = false // Pause during AI response/playback
     private var smartRecordThread: Thread? = null
     private var smartAudioRecord: AudioRecord? = null
-    private val SILENCE_THRESHOLD_RMS = 500f    // Below this = silence (tuned: 300 too sensitive, 800 too strict)
+    private val SILENCE_THRESHOLD_RMS = 300f    // Below this = silence (server filters hallucinations now)
+    private val BARGEIN_THRESHOLD_RMS = 1500f  // Higher threshold to barge-in during playback (avoid echo)
     private val SILENCE_DURATION_MS = 1200L     // 1.2s silence = end of speech
     private val MIN_SPEECH_DURATION_MS = 600L   // Min 600ms to count as speech (filters noise bursts)
     private val MAX_SEGMENT_MS = 15000L         // Max 15s per segment
@@ -1122,8 +1123,10 @@ class MainActivity : Activity() {
                 }
                 val rms = Math.sqrt(sum.toDouble() / (read / 2)).toFloat()
 
-                // Barge-in: if AI is playing and user speaks, interrupt
-                if (smartPaused && rms > SILENCE_THRESHOLD_RMS) {
+                // Barge-in: if AI is playing and user speaks LOUDLY, interrupt
+                // Uses higher threshold to avoid picking up speaker echo
+                if (smartPaused && rms > BARGEIN_THRESHOLD_RMS) {
+                    Log.d("SmartListen", "Barge-in triggered: rms=$rms")
                     handler.post { bargeIn() }
                     // smartPaused is now false (set by bargeIn/stopAllPlayback)
                     // Fall through to normal speech detection
@@ -1835,7 +1838,10 @@ class MainActivity : Activity() {
                     mediaPlayer = null
                     tmpFile.delete()
                     currentUiState = "idle"
-                    smartPaused = false  // Resume smart listening after playback
+                    // Delay resume to avoid picking up TTS echo tail
+                    handler.postDelayed({
+                        smartPaused = false
+                    }, 500)
                     handler.post {
                         setActiveAmplitude(0f)
                         if (listenMode == "smart_listen" && isConnected) {
