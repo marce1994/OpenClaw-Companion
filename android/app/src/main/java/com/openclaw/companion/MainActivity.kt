@@ -110,9 +110,9 @@ class MainActivity : Activity() {
     @Volatile private var smartPaused = false // Pause during AI response/playback
     private var smartRecordThread: Thread? = null
     private var smartAudioRecord: AudioRecord? = null
-    private val SILENCE_THRESHOLD_RMS = 300f    // Below this = silence (lowered for sensitivity)
+    private val SILENCE_THRESHOLD_RMS = 500f    // Below this = silence (tuned: 300 too sensitive, 800 too strict)
     private val SILENCE_DURATION_MS = 1200L     // 1.2s silence = end of speech
-    private val MIN_SPEECH_DURATION_MS = 400L   // Min 400ms to count as speech
+    private val MIN_SPEECH_DURATION_MS = 600L   // Min 600ms to count as speech (filters noise bursts)
     private val MAX_SEGMENT_MS = 15000L         // Max 15s per segment
     private lateinit var spinnerListenMode: Spinner
     private val listenModeOptions = arrayOf("Push to Talk", "Smart Listen")
