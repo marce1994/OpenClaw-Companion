@@ -1079,7 +1079,7 @@ class MainActivity : Activity() {
             val bufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
             try {
                 smartAudioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufSize * 2
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, sampleRate, channelConfig, audioFormat, bufSize * 2
                 )
             } catch (e: SecurityException) {
                 handler.post { Toast.makeText(this, "Mic permission needed", Toast.LENGTH_SHORT).show() }
