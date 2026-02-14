@@ -398,6 +398,21 @@ class MainActivity : Activity() {
         }
         chatRecyclerViewL2d.adapter = chatAdapterL2d
 
+        // Fade-out items as they scroll toward the top
+        val fadeZonePx = (200 * resources.displayMetrics.density).toInt() // 200dp fade zone
+        chatRecyclerViewL2d.addItemDecoration(object : RecyclerView.ItemDecoration() {
+            override fun onDraw(c: android.graphics.Canvas, parent: RecyclerView, state: RecyclerView.State) {
+                for (i in 0 until parent.childCount) {
+                    val child = parent.getChildAt(i)
+                    val top = child.top
+                    val alpha = if (top < fadeZonePx) {
+                        (top.toFloat() / fadeZonePx).coerceIn(0f, 1f)
+                    } else 1f
+                    child.alpha = alpha
+                }
+            }
+        })
+
         // Attach button
         btnAttach = findViewById(R.id.btnAttach)
         btnAttach.setOnClickListener { showAttachmentOptions() }
