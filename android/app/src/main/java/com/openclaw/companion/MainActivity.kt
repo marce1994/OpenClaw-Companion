@@ -110,9 +110,9 @@ class MainActivity : Activity() {
     @Volatile private var smartPaused = false // Pause during AI response/playback
     private var smartRecordThread: Thread? = null
     private var smartAudioRecord: AudioRecord? = null
-    private val SILENCE_THRESHOLD_RMS = 800f    // Below this = silence
-    private val SILENCE_DURATION_MS = 1500L     // 1.5s silence = end of speech
-    private val MIN_SPEECH_DURATION_MS = 500L   // Min 500ms to count as speech
+    private val SILENCE_THRESHOLD_RMS = 300f    // Below this = silence (lowered for sensitivity)
+    private val SILENCE_DURATION_MS = 1200L     // 1.2s silence = end of speech
+    private val MIN_SPEECH_DURATION_MS = 400L   // Min 400ms to count as speech
     private val MAX_SEGMENT_MS = 15000L         // Max 15s per segment
     private lateinit var spinnerListenMode: Spinner
     private val listenModeOptions = arrayOf("Push to Talk", "Smart Listen")
@@ -1136,12 +1136,18 @@ class MainActivity : Activity() {
                     continue
                 }
 
+                // Debug: show RMS in status every ~1s
+                if (System.currentTimeMillis() % 1000 < 50) {
+                    Log.d("SmartListen", "RMS: $rms paused=$smartPaused speech=$isSpeech connected=$isConnected")
+                }
+
                 if (rms > SILENCE_THRESHOLD_RMS) {
                     // Speech detected
                     if (!isSpeech) {
                         isSpeech = true
                         speechStart = System.currentTimeMillis()
                         speechBuffer = ByteArrayOutputStream()
+                        Log.d("SmartListen", "Speech START rms=$rms")
                         handler.post {
                             setActiveState(OrbView.State.LISTENING)
                             setActiveAmplitude((rms / 8000f).coerceIn(0f, 1f))
@@ -1215,9 +1221,13 @@ class MainActivity : Activity() {
     }
 
     private fun sendSmartSegment(pcmData: ByteArray) {
-        if (!isConnected || pcmData.size < 1000) return
+        if (!isConnected || pcmData.size < 1000) {
+            Log.w("SmartListen", "Segment dropped: connected=$isConnected size=${pcmData.size}")
+            return
+        }
         val wavData = pcmToWav(pcmData, sampleRate, 1, 16)
         val b64 = Base64.encodeToString(wavData, Base64.NO_WRAP)
+        Log.d("SmartListen", "Sending segment: ${wavData.size} bytes WAV")
         sendWs(JSONObject().put("type", "ambient_audio").put("data", b64))
         handler.post {
             setActiveState(OrbView.State.THINKING)
