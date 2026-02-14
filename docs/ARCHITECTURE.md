@@ -1,174 +1,237 @@
 # OpenClaw Companion — Architecture
 
-## Overview
+System architecture and protocol specification for the OpenClaw Companion voice assistant.
 
-OpenClaw Companion is a multi-platform voice & chat assistant client. All platforms connect to the same **WebSocket server** which handles AI, TTS, STT, and speaker identification.
-
-```
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   Android    │  │     Web      │  │   Desktop    │
-│   (Kotlin)   │  │  (React/TS)  │  │  (KMP/JVM)   │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                 │                 │
-       └────────┬────────┘────────┬────────┘
-                │   WebSocket     │
-         ┌──────▼─────────────────▼──────┐
-         │      Voice Server (Node.js)    │
-         │  - Auth & session sync         │
-         │  - STT (Whisper)               │
-         │  - LLM (OpenClaw Gateway)      │
-         │  - TTS (Kokoro/XTTS/Edge)      │
-         │  - Speaker ID (Resemblyzer)    │
-         │  - Web search (DuckDuckGo)     │
-         └────────────────────────────────┘
-```
-
-## Shared Protocol (WebSocket)
-
-All clients implement the same WebSocket message protocol. This is the **single source of truth** for cross-platform behavior.
-
-### Connection
+## System Overview
 
 ```
-ws://<server>:<port>  (default: 3200)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            CLIENT LAYER                                     │
+│                                                                             │
+│   ┌──────────────┐    ┌──────────────┐                                     │
+│   │  Android App │    │  Web Client  │                                     │
+│   │  (Kotlin)    │    │  (React/TS)  │                                     │
+│   │              │    │              │                                     │
+│   │  • Live2D    │    │  • Live2D    │                                     │
+│   │  • PTT voice │    │  • PTT voice │                                     │
+│   │  • Smart     │    │  • Smart     │                                     │
+│   │    Listen    │    │    Listen    │                                     │
+│   │  • Text chat │    │  • Text chat │                                     │
+│   └──────┬───────┘    └──────┬───────┘                                     │
+│          │                   │                                              │
+│          └─────────┬─────────┘                                              │
+│                    │ WebSocket (WS :3200 / WSS :3443)                       │
+│                    │ JSON messages + base64 audio                           │
+└────────────────────┼────────────────────────────────────────────────────────┘
+                     │
+┌────────────────────┼────────────────────────────────────────────────────────┐
+│                    ▼           VOICE SERVER                                 │
+│   ┌────────────────────────────────────────┐                               │
+│   │  Node.js WebSocket Server (:3200)      │                               │
+│   │                                        │                               │
+│   │  • Authentication & session mgmt       │                               │
+│   │  • Message routing & sequencing        │                               │
+│   │  • Sentence-boundary detection         │                               │
+│   │  • Emotion extraction                  │                               │
+│   │  • Artifact/button extraction          │                               │
+│   │  • Parallel TTS generation             │                               │
+│   │  • Barge-in & cancellation             │                               │
+│   │  • Conversation history (10 exchanges) │                               │
+│   │  • Auto web search injection           │                               │
+│   └──────┬─────────┬────────────┬──────────┘                               │
+│          │         │            │                                           │
+│   ┌──────▼───┐  ┌──▼──────┐  ┌─▼────────────┐                             │
+│   │ Speaker  │  │ Whisper │  │ TTS Engine   │                              │
+│   │ ID Svc   │  │ ASR     │  │              │                              │
+│   │ (Python) │  │ :9000   │  │ Kokoro :5004 │                              │
+│   │ :3201    │  │         │  │ XTTS   :5002 │                              │
+│   │          │  │ large-  │  │ Edge (cloud) │                              │
+│   │ +Search  │  │ v3-turbo│  │              │                              │
+│   └──────────┘  └─────────┘  └──────────────┘                              │
+│          │                                                                  │
+│          ▼                                                                  │
+│   ┌──────────────────────────────┐                                         │
+│   │  OpenClaw Gateway (:18789)   │                                         │
+│   │                              │                                         │
+│   │  HTTP: /v1/chat/completions  │                                         │
+│   │  WS:   native protocol v3   │                                         │
+│   │                              │                                         │
+│   │  → LLM (Claude, GPT, etc.)  │                                         │
+│   └──────────────────────────────┘                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Authentication
+## Component Details
 
-Client sends on connect:
-```json
-{
-  "type": "auth",
-  "token": "<auth-token>",
-  "sessionId": "<previous-session-id>",     // optional, for reconnection
-  "lastServerSeq": <last-received-sseq>      // optional, for replay
-}
+### Voice Server (Node.js)
+
+The central bridge that orchestrates all services. Single container running both Node.js and Python.
+
+**Responsibilities:**
+- WebSocket server for client connections (WS + optional WSS)
+- Authentication with shared token
+- Session management with reconnect support (5-min TTL, 40-message buffer)
+- Audio routing to Whisper ASR
+- Text routing to OpenClaw Gateway (HTTP SSE or native WebSocket)
+- Sentence-boundary detection in streaming LLM output
+- Parallel TTS generation per sentence
+- Emotion tag extraction and fallback keyword detection
+- Code artifact extraction (>200 char code blocks)
+- Button extraction (`[[buttons:opt1|opt2]]` syntax)
+- Web search auto-detection and result injection
+- Conversation history (sliding window of 10 exchanges)
+- Barge-in handling with partial response preservation
+
+### Speaker Identification Service (Python)
+
+Embedded HTTP microservice using Resemblyzer for voice biometrics.
+
+**Capabilities:**
+- Speaker embedding extraction from WAV audio
+- Cosine similarity matching against stored profiles
+- Auto-enrollment: first speaker → owner (after 3 samples)
+- Unknown speaker tracking and auto-enrollment
+- Self-introduction detection ("my name is X" / "me llamo X")
+- Profile management: enroll, rename, reset
+- DuckDuckGo web search endpoint
+
+### TTS Engines
+
+| Engine | Type | Latency | GPU | Voice Cloning | Fallback |
+|--------|------|---------|-----|---------------|----------|
+| **Kokoro** | Local | ~460ms | Required | No | → Edge |
+| **Edge** | Cloud | ~2300ms | No | No | — |
+| **XTTS v2** | Local | ~1000ms | Required | Yes | → Edge |
+
+All engines produce audio that's sent as base64 in `audio_chunk` messages. Engine is switchable at runtime via WebSocket.
+
+---
+
+## WebSocket Protocol Specification
+
+### Connection Flow
+
+```
+Client                              Server
+  │                                    │
+  │──── WebSocket Connect ────────────►│
+  │                                    │
+  │──── auth {token, sessionId?} ─────►│
+  │                                    │
+  │◄─── auth {status, sessionId} ─────│
+  │◄─── [replayed missed messages] ───│
+  │                                    │
+  │──── audio/text/image ─────────────►│
+  │                                    │
+  │◄─── status {transcribing} ────────│
+  │◄─── transcript {text} ────────────│
+  │◄─── status {thinking} ────────────│
+  │◄─── status {speaking} ────────────│
+  │◄─── emotion {emotion} ────────────│
+  │◄─── reply_chunk {text, idx, emo} ─│
+  │◄─── audio_chunk {data, idx, emo} ─│
+  │◄─── reply_chunk {text, idx, emo} ─│
+  │◄─── audio_chunk {data, idx, emo} ─│
+  │◄─── buttons {options[]} ──────────│
+  │◄─── stream_done ──────────────────│
+  │◄─── status {idle} ────────────────│
+  │                                    │
+  │──── barge_in ─────────────────────►│
+  │◄─── stop_playback ────────────────│
+  │◄─── status {idle} ────────────────│
 ```
 
-Server responds:
-```json
-{
-  "type": "auth_success",
-  "sessionId": "<session-id>",
-  "serverSeq": <current-server-seq>,
-  "sseq": 1
-}
+### Message Sequence Numbers
+
+Every server → client message includes `sseq` (server sequence number, monotonically increasing). On reconnect, the client sends `lastServerSeq` to receive missed messages.
+
+Client → server messages can include `cseq` for deduplication. The server tracks the last seen `cseq` per session and skips duplicates.
+
+### Smart Listen Flow
+
+```
+Client                              Server
+  │                                    │
+  │──── ambient_audio {data} ─────────►│
+  │                                    │
+  │◄─── smart_status {transcribing} ──│
+  │                                    │  ┌─ Whisper + Speaker ID (parallel)
+  │                                    │  │
+  │◄─── ambient_transcript ───────────│  │  {text, speaker, isOwner, isKnown}
+  │                                    │
+  │  [if wake word detected or owner]  │
+  │                                    │
+  │◄─── transcript {[Speaker] text} ──│
+  │◄─── status {thinking} ────────────│
+  │◄─── ... (normal response flow) ───│
+  │                                    │
+  │  [if no trigger]                   │
+  │◄─── smart_status {listening} ─────│
 ```
 
-### Client → Server Messages
+### State Machine
+
+```
+idle ──► transcribing ──► thinking ──► speaking ──► idle
+  ▲                                        │
+  └──────────── barge_in / cancel ─────────┘
+```
+
+### Complete Message Reference
+
+#### Client → Server
+
+| Type | Required Fields | Optional Fields | Description |
+|------|----------------|-----------------|-------------|
+| `auth` | `token` | `sessionId`, `lastServerSeq`, `clientSeq` | Authenticate |
+| `audio` | `data` (base64 WAV) | `prefix` | Voice → transcribe → respond |
+| `ambient_audio` | `data` (base64 WAV) | | Smart Listen audio |
+| `text` | `text` | `prefix` | Text message |
+| `image` | `data` (base64) | `mimeType`, `text` | Image for vision |
+| `file` | `data` (base64), `name` | | Text file for analysis |
+| `cancel` | | | Cancel generation |
+| `barge_in` | | | Interrupt + stop playback |
+| `clear_history` | | | Clear conversation memory |
+| `replay` | | | Replay last audio |
+| `set_bot_name` | `name` | | Change wake word |
+| `enroll_audio` | `data` (base64 WAV), `name` | `append` | Enroll speaker |
+| `get_profiles` | | | List speakers |
+| `rename_speaker` | `oldName`, `newName` | | Rename speaker |
+| `reset_speakers` | | | Reset all profiles |
+| `set_tts_engine` | `engine` | | Switch TTS engine |
+| `get_settings` | | | Get server config |
+| `ping` | | | Keep-alive |
+
+#### Server → Client
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `audio` | `data` (base64 PCM 16-bit 16kHz mono) | Voice audio chunk |
-| `text` | `text` | Text chat message |
-| `image` | `data` (base64), `mimeType`, `caption?` | Send image |
-| `file` | `data` (base64), `filename`, `mimeType` | Send file |
-| `cancel` | — | Cancel current AI response |
-| `barge_in` | — | Interrupt AI speech |
-| `clear_history` | — | Clear conversation history |
-| `ping` | — | Keepalive |
-| `ambient_audio` | `data` (base64) | Smart Listen ambient audio |
-| `enroll_audio` | `data` (base64), `name` | Enroll speaker voice profile |
-| `get_profiles` | — | List enrolled speaker profiles |
-| `set_bot_name` | `name` | Change bot display name |
+| `auth` | `status`, `sessionId`, `serverSeq` | Auth result |
+| `status` | `status` | State: `transcribing`, `thinking`, `speaking`, `idle` |
+| `transcript` | `text` | User speech transcription |
+| `reply_chunk` | `text`, `index`, `emotion` | AI response sentence (text) |
+| `audio_chunk` | `data` (base64), `index`, `emotion`, `text` | AI response sentence (audio) |
+| `stream_done` | | All chunks sent |
+| `stop_playback` | | Stop audio (barge-in) |
+| `emotion` | `emotion` | First sentence emotion |
+| `history_cleared` | | History cleared confirmation |
+| `ambient_transcript` | `text`, `speaker`, `isOwner`, `isKnown` | Smart Listen transcript |
+| `smart_status` | `status` | Smart Listen state |
+| `artifact` | `artifactType`, `content`, `language`, `title` | Code block artifact |
+| `buttons` | `options[]` (`{text, value}`) | Interactive buttons |
+| `settings` | `ttsEngine`, `ttsEngines[]`, `botName`, `ownerName` | Server settings |
+| `tts_engine` | `engine`, `status` | TTS engine change result |
+| `profiles` | `profiles[]`, `count`, `ownerEnrolled` | Speaker profiles |
+| `enroll_result` | `status`, `speaker`/`message` | Enrollment result |
+| `rename_result` | `status`, `old`, `new`/`message` | Rename result |
+| `reset_result` | `status` | Reset result |
+| `error` | `message` | Error |
+| `pong` | | Keep-alive response |
 
-### Server → Client Messages
-
-All server messages include `sseq` (server sequence number) for replay/sync.
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `auth_success` | `sessionId`, `serverSeq` | Auth confirmed |
-| `transcription` | `text` | STT result of user's audio |
-| `response` | `text` | AI text response (may stream via multiple messages) |
-| `response_end` | — | AI response complete |
-| `audio` | `data` (base64 MP3/WAV), `format` | TTS audio |
-| `emotion` | `emotion` | Detected emotion tag for avatar |
-| `error` | `message` | Error message |
-| `artifact` | `title`, `language`, `content` | Code/content artifact |
-| `button` | `buttons` (array of `{text, callback_data}`) | Inline buttons |
-| `profiles` | `profiles` (array) | Speaker profiles list |
-| `stop_playback` | — | Client should stop playing audio |
-| `pong` | — | Keepalive response |
-
-### Session Sync & Reconnection
-
-1. Client stores `sessionId` and `lastServerSeq` (highest `sseq` received)
-2. On reconnect, client sends both in `auth` message
-3. Server replays missed messages (up to 40) with `_replayed: true` flag
-4. Client deduplicates replayed messages (skip if already received)
-
-### Audio Format
-
-- **Recording**: PCM 16-bit, 16kHz, mono (little-endian)
-- **TTS output**: MP3 (Edge/Kokoro) or WAV (XTTS)
-
-## Platform Implementation Guide
-
-### What Each Client Must Implement
-
-1. **WebSocket connection** with auth, reconnection, and session sync
-2. **Audio recording** from microphone → PCM → base64 → send as `audio` messages
-3. **Audio playback** of received TTS audio (MP3/WAV)
-4. **Chat UI** with message bubbles, markdown rendering, inline buttons, artifacts
-5. **Emotion display** — parse `[[emotion:tag]]` from responses for avatar animation
-6. **Barge-in** — detect user wants to interrupt, send `barge_in`, stop playback
-7. **Smart Listen** (optional) — continuous ambient listening with speaker ID
-
-### Platform-Specific Notes
-
-#### Android (Current)
-- AudioRecord for mic, MediaPlayer for playback
-- Foreground service for background operation
-- OkHttp WebSocket client
-- Markwon for markdown
-
-#### Web (In Development)
-- Web Audio API / MediaRecorder for mic
-- HTMLAudioElement or Web Audio API for playback
-- Native WebSocket API
-- react-markdown or marked for markdown
-- Echo cancellation via `echoCancellation: true` constraint (free!)
-
-#### Desktop (Planned)
-- javax.sound.sampled for mic/playback
-- Ktor WebSocket client
-- Transparent floating window with avatar
-- System tray integration
-
-## File Structure
+### Emotion Values
 
 ```
-projects/voice-assistant/
-├── server/              # WebSocket server (shared backend)
-│   ├── index.js         # Main server
-│   ├── speaker_service.py
-│   ├── Dockerfile
-│   └── start.sh
-├── android/             # Android client
-│   └── app/src/main/
-├── web/                 # Web client (React + TypeScript)
-│   ├── src/
-│   │   ├── hooks/       # useWebSocket, useAudio, etc.
-│   │   ├── components/  # ChatMessage, Avatar, etc.
-│   │   ├── protocol/    # Message types, serialization
-│   │   └── App.tsx
-│   └── package.json
-├── docs/
-│   └── ARCHITECTURE.md  # This file
-└── .github/workflows/
-    └── build.yml        # CI/CD
+happy | sad | surprised | thinking | confused | laughing | neutral | angry | love
 ```
 
-## Adding a New Platform
-
-1. Read this document and the WebSocket protocol spec above
-2. Implement auth + session sync
-3. Implement audio recording in platform's native API
-4. Implement audio playback
-5. Build chat UI with markdown support
-6. Add emotion parsing for avatar (optional)
-7. Add Smart Listen (optional)
-8. Add to CI/CD workflow
-
-The server doesn't need any changes — all platforms use the same WebSocket API.
+Embedded in LLM output as `[[emotion:X]]` tags. Extracted by the server and sent in `reply_chunk` / `audio_chunk` / `emotion` messages.
