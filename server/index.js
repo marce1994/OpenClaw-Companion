@@ -4,6 +4,8 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
+let sharp;
+try { sharp = require('sharp'); } catch { sharp = null; }
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -748,17 +750,33 @@ async function streamAI(opts, onSentence, onDone, signal) {
       ? userMsg.content 
       : userMsg.content?.map(c => c.text || '').join(' ') || '';
     
-    // Build attachments from multimodal content
+    // Build attachments from multimodal content (resize to fit WS 512KB payload)
     const attachments = [];
     if (Array.isArray(userMsg.content)) {
       for (const part of userMsg.content) {
         if (part.type === 'image_url' && part.image_url?.url) {
           const match = part.image_url.url.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
+            let imgBase64 = match[2];
+            const mimeType = match[1];
+            // Resize if base64 > 300KB to fit within WS 512KB frame
+            if (sharp && imgBase64.length > 300_000) {
+              try {
+                const buf = Buffer.from(imgBase64, 'base64');
+                const resized = await sharp(buf)
+                  .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+                  .jpeg({ quality: 70 })
+                  .toBuffer();
+                imgBase64 = resized.toString('base64');
+                console.log(`🖼️ Resized image: ${buf.length} → ${resized.length} bytes`);
+              } catch (e) {
+                console.error('⚠️ Image resize failed, sending original:', e.message);
+              }
+            }
             attachments.push({
               type: 'image',
-              mimeType: match[1],
-              content: match[2],
+              mimeType: imgBase64 !== match[2] ? 'image/jpeg' : mimeType,
+              content: imgBase64,
             });
           }
         }
