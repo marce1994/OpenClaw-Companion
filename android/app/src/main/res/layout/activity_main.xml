@@ -205,12 +205,14 @@
                 android:layout_height="0dp"
                 android:layout_weight="1"
                 android:clipToPadding="false"
-                android:paddingTop="80dp"
+                android:paddingTop="120dp"
                 android:paddingStart="12dp"
                 android:paddingEnd="12dp"
                 android:paddingBottom="8dp"
                 android:scrollbars="none"
-                android:overScrollMode="never" />
+                android:overScrollMode="never"
+                android:requiresFadingEdge="vertical"
+                android:fadingEdgeLength="200dp" />
 
             <!-- Bottom controls area with gradient -->
             <LinearLayout
