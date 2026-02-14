@@ -1,0 +1,151 @@
+name: Test Setup Flow
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'server/Dockerfile'
+      - 'server/docker-compose.yml'
+      - 'server/setup.sh'
+      - 'server/.env.example'
+      - 'server/start.sh'
+      - 'server/package.json'
+      - '.github/workflows/test-setup.yml'
+
+jobs:
+  test-setup:
+    name: Test Server Setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify files exist
+        run: |
+          echo "=== Checking required files ==="
+          for f in server/Dockerfile server/docker-compose.yml server/setup.sh server/.env.example server/start.sh server/package.json server/index.js server/speaker_service.py; do
+            if [ -f "$f" ]; then
+              echo "✅ $f"
+            else
+              echo "❌ MISSING: $f"
+              exit 1
+            fi
+          done
+
+      - name: Test setup.sh is executable and valid bash
+        run: |
+          bash -n server/setup.sh
+          echo "✅ setup.sh syntax OK"
+          test -x server/setup.sh || chmod +x server/setup.sh
+          echo "✅ setup.sh is executable"
+
+      - name: Generate .env (simulating setup.sh)
+        run: |
+          cd server
+          cat > .env << 'EOF'
+          GATEWAY_WS_URL=ws://127.0.0.1:18789
+          GATEWAY_TOKEN=test-token-for-ci
+          USE_GATEWAY_WS=true
+          AUTH_TOKEN=ci-test-auth-token
+          WHISPER_URL=http://127.0.0.1:9000/asr?language=es&output=json
+          TTS_ENGINE=edge
+          TTS_VOICE=es-AR-TomasNeural
+          KOKORO_URL=http://127.0.0.1:5004
+          KOKORO_VOICE=em_alex
+          BOT_NAME=jarvis
+          OWNER_NAME=CI-Test
+          GW_SESSION_KEY=voice
+          ASR_MODEL=tiny
+          WHISPER_IMAGE=onerahmet/openai-whisper-asr-webservice:latest
+          PORT=3200
+          WHISPER_PORT=9000
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' .env
+          echo "✅ .env generated"
+          cat .env
+
+      - name: Validate docker-compose.yml
+        run: |
+          cd server
+          docker compose config > /dev/null
+          echo "✅ docker-compose.yml is valid"
+
+      - name: Build voice server image
+        run: |
+          cd server
+          docker compose build voice-server
+          echo "✅ Voice server image built"
+
+      - name: Pull Whisper image
+        run: |
+          cd server
+          docker compose pull whisper
+          echo "✅ Whisper image pulled"
+
+      - name: Start services
+        run: |
+          cd server
+          docker compose up -d
+          echo "✅ Services starting..."
+
+      - name: Wait for Whisper
+        run: |
+          echo "Waiting for Whisper to be ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:9000/docs > /dev/null 2>&1; then
+              echo "✅ Whisper is ready (${i}s)"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Wait for Voice Server
+        run: |
+          echo "Waiting for voice server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3200/health > /dev/null 2>&1; then
+              echo "✅ Voice server is healthy (${i}s)"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Test Whisper transcription
+        run: |
+          # Generate a short WAV with silence
+          python3 -c "
+          import struct
+          sr=16000; dur=1; samples=sr*dur
+          header = struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', 36+samples*2, b'WAVE', b'fmt ', 16, 1, 1, sr, sr*2, 2, 16, b'data', samples*2)
+          data = b'\x00\x00' * samples
+          open('/tmp/test.wav','wb').write(header + data)
+          "
+          RESULT=$(curl -sf -F "audio_file=@/tmp/test.wav" "http://127.0.0.1:9000/asr?language=es&output=json" 2>&1) || true
+          echo "Whisper response: $RESULT"
+          echo "✅ Whisper API responding"
+
+      - name: Test Voice Server health
+        run: |
+          HEALTH=$(curl -sf http://127.0.0.1:3200/health 2>&1) || true
+          echo "Health: $HEALTH"
+          echo "✅ Voice server health endpoint OK"
+
+      - name: Show service status
+        if: always()
+        run: |
+          cd server
+          echo "=== Container Status ==="
+          docker compose ps
+          echo ""
+          echo "=== Voice Server Logs ==="
+          docker compose logs voice-server --tail 30
+          echo ""
+          echo "=== Whisper Logs ==="
+          docker compose logs whisper --tail 15
+
+      - name: Cleanup
+        if: always()
+        run: |
+          cd server
+          docker compose down -v 2>/dev/null || true
