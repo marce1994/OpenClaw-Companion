@@ -15,8 +15,8 @@ import java.util.Date
 class ChatAdapter(
     private val messages: List<ChatMessage>,
     private val markwon: Markwon,
-    private val onButtonClick: (String) -> Unit,
-    val transparent: Boolean = false
+    val transparent: Boolean = false,
+    private val onButtonClick: (String) -> Unit = {}
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     companion object {
