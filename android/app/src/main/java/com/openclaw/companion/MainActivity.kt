@@ -102,6 +102,7 @@ class MainActivity : Activity() {
     private lateinit var markwon: Markwon
     private lateinit var btnAttach: ImageButton
     private var accumulatedReplyText = StringBuilder()
+    private var showL2dChat: (() -> Unit)? = null
 
     // Smart Listen Mode
     private var listenMode = "push_to_talk" // "push_to_talk" or "smart_listen"
@@ -398,20 +399,25 @@ class MainActivity : Activity() {
         }
         chatRecyclerViewL2d.adapter = chatAdapterL2d
 
-        // Fade-out items as they scroll toward the top
-        val fadeZonePx = (200 * resources.displayMetrics.density).toInt() // 200dp fade zone
-        chatRecyclerViewL2d.addItemDecoration(object : RecyclerView.ItemDecoration() {
-            override fun onDraw(c: android.graphics.Canvas, parent: RecyclerView, state: RecyclerView.State) {
-                for (i in 0 until parent.childCount) {
-                    val child = parent.getChildAt(i)
-                    val top = child.top
-                    val alpha = if (top < fadeZonePx) {
-                        (top.toFloat() / fadeZonePx).coerceIn(0f, 1f)
-                    } else 1f
-                    child.alpha = alpha
-                }
+        // Auto-hide chat after inactivity, show on scroll or new message
+        val chatFadeHandler = android.os.Handler(mainLooper)
+        val chatFadeDelay = 4000L // 4 seconds
+        val chatFadeRunnable = Runnable {
+            chatRecyclerViewL2d.animate().alpha(0f).setDuration(600).start()
+        }
+        fun showL2dChat() {
+            chatFadeHandler.removeCallbacks(chatFadeRunnable)
+            chatRecyclerViewL2d.animate().alpha(1f).setDuration(200).start()
+            chatFadeHandler.postDelayed(chatFadeRunnable, chatFadeDelay)
+        }
+        // Show on scroll
+        chatRecyclerViewL2d.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                if (dy != 0) showL2dChat()
             }
         })
+        // Store reference for showing on new messages
+        this.showL2dChat = { showL2dChat() }
 
         // Attach button
         btnAttach = findViewById(R.id.btnAttach)
@@ -852,6 +858,7 @@ class MainActivity : Activity() {
         chatAdapterL2d.notifyItemInserted(chatMessages.size - 1)
         chatRecyclerView.scrollToPosition(chatMessages.size - 1)
         chatRecyclerViewL2d.scrollToPosition(chatMessages.size - 1)
+        showL2dChat?.invoke()
     }
 
     private fun updateLastAssistantMessage(text: String, emotion: String = "neutral", isStreaming: Boolean = true) {
@@ -863,6 +870,7 @@ class MainActivity : Activity() {
             chatAdapterL2d.notifyItemChanged(index)
             chatRecyclerView.scrollToPosition(index)
             chatRecyclerViewL2d.scrollToPosition(index)
+            showL2dChat?.invoke()
         } else {
             addChatMessage(ChatMessage(role = "assistant", text = text, emotion = emotion, isStreaming = isStreaming))
         }

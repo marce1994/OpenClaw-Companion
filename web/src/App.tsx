@@ -37,13 +37,24 @@ export default function App() {
   const [lastReply, setLastReply] = useState('');
   const [smartListenActive, setSmartListenActive] = useState(false);
   const [serverTtsEngine, setServerTtsEngine] = useState<string>('');
+  const [l2dChatVisible, setL2dChatVisible] = useState(true);
+  const l2dChatTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamingIdRef = useRef<string>('');
   const streamingChunksRef = useRef<Map<number, string>>(new Map());
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  const showL2dChatBriefly = useCallback(() => {
+    setL2dChatVisible(true);
+    if (l2dChatTimer.current) clearTimeout(l2dChatTimer.current);
+    l2dChatTimer.current = setTimeout(() => setL2dChatVisible(false), 4000);
+  }, []);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (viewMode === 'live2d' && messages.length > 0) showL2dChatBriefly();
+  }, [messages, viewMode, showL2dChatBriefly]);
 
   // Persist model selection
   useEffect(() => { localStorage.setItem('oc-model', selectedModel.id); }, [selectedModel]);
@@ -313,7 +324,8 @@ export default function App() {
             <Live2DAvatar modelPath={selectedModel.path} emotion={currentEmotion}
               audioRef={audioRef} status={appStatus} isPlaying={isPlaying} />
           </div>
-          <div className="l2d-chat-overlay">
+          <div className={`l2d-chat-overlay ${l2dChatVisible ? '' : 'l2d-chat-hidden'}`}
+            onScroll={() => showL2dChatBriefly()} onTouchStart={() => showL2dChatBriefly()}>
             {/* Model selector as horizontal scroll */}
             <div className="l2d-models">
               {AVAILABLE_MODELS.map(m => (
@@ -321,7 +333,7 @@ export default function App() {
                   onClick={() => setSelectedModel(m)}>{m.name}</button>
               ))}
             </div>
-            <div className="l2d-chat-scroll">
+            <div className="l2d-chat-scroll" onScroll={() => showL2dChatBriefly()}>
               {messages.map(msg => <ChatBubble key={msg.id} message={msg} onButtonClick={handleButtonClick} />)}
               <div ref={chatEndRef} />
             </div>

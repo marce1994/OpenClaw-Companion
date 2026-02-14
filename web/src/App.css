@@ -138,6 +138,15 @@
   pointer-events: auto;
 }
 
+.l2d-chat-overlay .l2d-chat-scroll {
+  transition: opacity 0.6s ease;
+}
+
+.l2d-chat-overlay.l2d-chat-hidden .l2d-chat-scroll {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .l2d-chat-scroll {
   flex: 1;
   overflow-y: auto;
