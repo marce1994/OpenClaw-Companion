@@ -57,7 +57,6 @@ jobs:
           GW_SESSION_KEY=voice
           ASR_MODEL=tiny
           WHISPER_IMAGE=onerahmet/openai-whisper-asr-webservice:latest
-          GPU_DRIVER=none
           PORT=3200
           WHISPER_PORT=9000
           EOF
@@ -69,40 +68,32 @@ jobs:
       - name: Validate docker-compose.yml
         run: |
           cd server
-          docker compose --profile cpu config > /dev/null
+          docker compose config > /dev/null
           echo "✅ docker-compose.yml is valid"
 
       - name: Build voice server image
         run: |
           cd server
-          docker compose --profile cpu build voice-server
+          docker compose build voice-server
           echo "✅ Voice server image built"
 
-      - name: Pull Whisper CPU image
+      - name: Start services
         run: |
           cd server
-          docker compose --profile cpu pull whisper-cpu
-          echo "✅ Whisper CPU image pulled"
+          docker compose up -d
+          echo "✅ Services starting..."
 
-      - name: Start services (CPU mode)
+      - name: Wait for Whisper
         run: |
-          cd server
-          # Start whisper-cpu (CPU profile) + voice-server
-          # voice-server depends on 'whisper' which won't start (no GPU),
-          # so we start them individually
-          docker compose --profile cpu up -d whisper-cpu
-          echo "Waiting for Whisper CPU..."
+          echo "Waiting for Whisper..."
           for i in $(seq 1 90); do
             if curl -sf http://127.0.0.1:9000/docs > /dev/null 2>&1; then
-              echo "✅ Whisper CPU is ready (${i}s)"
+              echo "✅ Whisper is ready (${i}s)"
               break
             fi
             if [ "$i" = "90" ]; then echo "⚠️ Whisper timeout"; fi
             sleep 5
           done
-          # Start voice server without depends_on check
-          docker compose --profile cpu up -d --no-deps voice-server
-          echo "✅ Services starting..."
 
       - name: Wait for Voice Server
         run: |
@@ -140,16 +131,16 @@ jobs:
         run: |
           cd server
           echo "=== Container Status ==="
-          docker compose --profile cpu ps -a
+          docker compose ps -a
           echo ""
           echo "=== Voice Server Logs ==="
-          docker compose --profile cpu logs voice-server --tail 30 2>&1 || true
+          docker compose logs voice-server --tail 30 2>&1 || true
           echo ""
           echo "=== Whisper Logs ==="
-          docker compose --profile cpu logs whisper-cpu --tail 15 2>&1 || true
+          docker compose logs whisper --tail 15 2>&1 || true
 
       - name: Cleanup
         if: always()
         run: |
           cd server
-          docker compose --profile cpu down -v 2>/dev/null || true
+          docker compose down -v 2>/dev/null || true

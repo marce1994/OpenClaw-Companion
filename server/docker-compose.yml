@@ -7,9 +7,6 @@ services:
     restart: unless-stopped
     network_mode: host
     env_file: .env
-    depends_on:
-      whisper:
-        condition: service_started
     volumes:
       - ./data/speakers:/data/speakers
       # Optional: TLS certs for WSS
@@ -23,7 +20,7 @@ services:
       start_period: 10s
 
   whisper:
-    image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest}
+    image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
     container_name: openclaw-whisper
     restart: unless-stopped
     ports:
@@ -33,28 +30,6 @@ services:
       - ASR_ENGINE=faster_whisper
     volumes:
       - whisper-cache:/root/.cache
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: ${GPU_DRIVER:-nvidia}
-              count: all
-              capabilities: [gpu]
-
-  # CPU-only Whisper (no GPU required) — use instead of 'whisper' on machines without GPU
-  whisper-cpu:
-    image: onerahmet/openai-whisper-asr-webservice:latest
-    container_name: openclaw-whisper
-    restart: unless-stopped
-    ports:
-      - "${WHISPER_PORT:-9000}:9000"
-    environment:
-      - ASR_MODEL=${ASR_MODEL:-tiny}
-      - ASR_ENGINE=faster_whisper
-    volumes:
-      - whisper-cache:/root/.cache
-    profiles:
-      - cpu
 
   # Optional: uncomment to use Kokoro local TTS (GPU recommended)
   # kokoro-tts:
@@ -65,13 +40,6 @@ services:
   #     - "${KOKORO_PORT:-5004}:8080"
   #   volumes:
   #     - kokoro-cache:/models
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
 
 volumes:
   whisper-cache:
