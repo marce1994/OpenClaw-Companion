@@ -190,18 +190,38 @@
             android:visibility="gone"
             android:alpha="0.8" />
 
-        <!-- Bottom overlay panel: gradient fade + transcript + controls -->
+        <!-- Chat overlay: scrollable chat + controls at bottom -->
         <LinearLayout
             android:id="@+id/live2dBottomOverlay"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
+            android:layout_height="match_parent"
             android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:paddingBottom="24dp"
-            android:paddingStart="20dp"
-            android:paddingEnd="20dp"
-            android:background="@drawable/live2d_bottom_gradient">
+            android:gravity="bottom">
+
+            <!-- Scrollable chat over Live2D model -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/chatRecyclerViewL2d"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:paddingTop="80dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="8dp"
+                android:scrollbars="none"
+                android:overScrollMode="never" />
+
+            <!-- Bottom controls area with gradient -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center_horizontal"
+                android:paddingBottom="24dp"
+                android:paddingStart="20dp"
+                android:paddingEnd="20dp"
+                android:background="@drawable/live2d_bottom_gradient">
 
             <!-- Status -->
             <TextView
@@ -211,7 +231,7 @@
                 android:text=""
                 android:textSize="14sp"
                 android:textColor="#CCCCCCCC"
-                android:layout_marginTop="32dp"
+                android:layout_marginTop="8dp"
                 android:fontFamily="sans-serif-light" />
 
             <!-- Swipe to cancel (Live2D) -->
@@ -224,40 +244,6 @@
                 android:textColor="#66AAAAAA"
                 android:layout_marginTop="4dp"
                 android:visibility="gone" />
-
-            <!-- Transcript (user said) -->
-            <TextView
-                android:id="@+id/txtTranscriptL2d"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text=""
-                android:textSize="14sp"
-                android:textColor="#AADDDDDD"
-                android:shadowColor="#FF000000"
-                android:shadowDx="1"
-                android:shadowDy="1"
-                android:shadowRadius="3"
-                android:gravity="center"
-                android:layout_marginTop="8dp"
-                android:maxLines="2"
-                android:ellipsize="end" />
-
-            <!-- Reply (bot said) -->
-            <TextView
-                android:id="@+id/txtReplyL2d"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text=""
-                android:textSize="16sp"
-                android:textColor="#FFFFFFFF"
-                android:shadowColor="#FF000000"
-                android:shadowDx="1"
-                android:shadowDy="1"
-                android:shadowRadius="4"
-                android:gravity="center"
-                android:layout_marginTop="4dp"
-                android:maxLines="4"
-                android:ellipsize="end" />
 
             <!-- Controls row -->
             <LinearLayout
@@ -297,6 +283,7 @@
                     android:contentDescription="@string/btn_settings"
                     android:layout_marginStart="32dp"
                     android:alpha="0.4" />
+            </LinearLayout>
             </LinearLayout>
         </LinearLayout>
     </FrameLayout>

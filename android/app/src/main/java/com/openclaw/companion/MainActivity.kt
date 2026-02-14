@@ -96,7 +96,9 @@ class MainActivity : Activity() {
 
     // Chat RecyclerView
     private lateinit var chatRecyclerView: RecyclerView
+    private lateinit var chatRecyclerViewL2d: RecyclerView
     private lateinit var chatAdapter: ChatAdapter
+    private lateinit var chatAdapterL2d: ChatAdapter
     private val chatMessages = mutableListOf<ChatMessage>()
     private lateinit var markwon: Markwon
     private lateinit var btnAttach: ImageButton
@@ -388,6 +390,17 @@ class MainActivity : Activity() {
             stackFromEnd = true
         }
         chatRecyclerView.adapter = chatAdapter
+
+        // Live2D chat recycler (shares same data)
+        chatRecyclerViewL2d = findViewById(R.id.chatRecyclerViewL2d)
+        chatAdapterL2d = ChatAdapter(chatMessages, markwon) { buttonValue ->
+            sendWs(JSONObject().put("type", "text").put("text", buttonValue))
+            addChatMessage(ChatMessage(role = "user", text = buttonValue))
+        }
+        chatRecyclerViewL2d.layoutManager = LinearLayoutManager(this).apply {
+            stackFromEnd = true
+        }
+        chatRecyclerViewL2d.adapter = chatAdapterL2d
 
         // Attach button
         btnAttach = findViewById(R.id.btnAttach)
@@ -825,7 +838,9 @@ class MainActivity : Activity() {
     private fun addChatMessage(message: ChatMessage) {
         chatMessages.add(message)
         chatAdapter.notifyItemInserted(chatMessages.size - 1)
+        chatAdapterL2d.notifyItemInserted(chatMessages.size - 1)
         chatRecyclerView.scrollToPosition(chatMessages.size - 1)
+        chatRecyclerViewL2d.scrollToPosition(chatMessages.size - 1)
     }
 
     private fun updateLastAssistantMessage(text: String, emotion: String = "neutral", isStreaming: Boolean = true) {
@@ -834,7 +849,9 @@ class MainActivity : Activity() {
             val index = chatMessages.size - 1
             chatMessages[index] = last.copy(text = text, emotion = emotion, isStreaming = isStreaming)
             chatAdapter.notifyItemChanged(index)
+            chatAdapterL2d.notifyItemChanged(index)
             chatRecyclerView.scrollToPosition(index)
+            chatRecyclerViewL2d.scrollToPosition(index)
         } else {
             addChatMessage(ChatMessage(role = "assistant", text = text, emotion = emotion, isStreaming = isStreaming))
         }
@@ -846,6 +863,7 @@ class MainActivity : Activity() {
             val index = chatMessages.size - 1
             chatMessages[index] = last.copy(buttons = buttons)
             chatAdapter.notifyItemChanged(index)
+            chatAdapterL2d.notifyItemChanged(index)
         }
     }
 
@@ -855,6 +873,7 @@ class MainActivity : Activity() {
             val index = chatMessages.size - 1
             chatMessages[index] = last.copy(artifact = artifact)
             chatAdapter.notifyItemChanged(index)
+            chatAdapterL2d.notifyItemChanged(index)
         }
     }
 
