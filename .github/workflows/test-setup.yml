@@ -57,6 +57,7 @@ jobs:
           GW_SESSION_KEY=voice
           ASR_MODEL=tiny
           WHISPER_IMAGE=onerahmet/openai-whisper-asr-webservice:latest
+          GPU_DRIVER=none
           PORT=3200
           WHISPER_PORT=9000
           EOF
@@ -68,52 +69,55 @@ jobs:
       - name: Validate docker-compose.yml
         run: |
           cd server
-          docker compose config > /dev/null
+          docker compose --profile cpu config > /dev/null
           echo "✅ docker-compose.yml is valid"
 
       - name: Build voice server image
         run: |
           cd server
-          docker compose build voice-server
+          docker compose --profile cpu build voice-server
           echo "✅ Voice server image built"
 
-      - name: Pull Whisper image
+      - name: Pull Whisper CPU image
         run: |
           cd server
-          docker compose pull whisper
-          echo "✅ Whisper image pulled"
+          docker compose --profile cpu pull whisper-cpu
+          echo "✅ Whisper CPU image pulled"
 
-      - name: Start services
+      - name: Start services (CPU mode)
         run: |
           cd server
-          docker compose up -d
-          echo "✅ Services starting..."
-
-      - name: Wait for Whisper
-        run: |
-          echo "Waiting for Whisper to be ready..."
-          for i in $(seq 1 60); do
+          # Start whisper-cpu (CPU profile) + voice-server
+          # voice-server depends on 'whisper' which won't start (no GPU),
+          # so we start them individually
+          docker compose --profile cpu up -d whisper-cpu
+          echo "Waiting for Whisper CPU..."
+          for i in $(seq 1 90); do
             if curl -sf http://127.0.0.1:9000/docs > /dev/null 2>&1; then
-              echo "✅ Whisper is ready (${i}s)"
+              echo "✅ Whisper CPU is ready (${i}s)"
               break
             fi
+            if [ "$i" = "90" ]; then echo "⚠️ Whisper timeout"; fi
             sleep 5
           done
+          # Start voice server without depends_on check
+          docker compose --profile cpu up -d --no-deps voice-server
+          echo "✅ Services starting..."
 
       - name: Wait for Voice Server
         run: |
           echo "Waiting for voice server..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:3200/health > /dev/null 2>&1; then
               echo "✅ Voice server is healthy (${i}s)"
               break
             fi
+            if [ "$i" = "60" ]; then echo "❌ Voice server timeout"; exit 1; fi
             sleep 2
           done
 
       - name: Test Whisper transcription
         run: |
-          # Generate a short WAV with silence
           python3 -c "
           import struct
           sr=16000; dur=1; samples=sr*dur
@@ -136,16 +140,16 @@ jobs:
         run: |
           cd server
           echo "=== Container Status ==="
-          docker compose ps
+          docker compose --profile cpu ps -a
           echo ""
           echo "=== Voice Server Logs ==="
-          docker compose logs voice-server --tail 30
+          docker compose --profile cpu logs voice-server --tail 30 2>&1 || true
           echo ""
           echo "=== Whisper Logs ==="
-          docker compose logs whisper --tail 15
+          docker compose --profile cpu logs whisper-cpu --tail 15 2>&1 || true
 
       - name: Cleanup
         if: always()
         run: |
           cd server
-          docker compose down -v 2>/dev/null || true
+          docker compose --profile cpu down -v 2>/dev/null || true

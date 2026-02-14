@@ -37,9 +37,24 @@ services:
       resources:
         reservations:
           devices:
-            - driver: nvidia
+            - driver: ${GPU_DRIVER:-nvidia}
               count: all
               capabilities: [gpu]
+
+  # CPU-only Whisper (no GPU required) — use instead of 'whisper' on machines without GPU
+  whisper-cpu:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: openclaw-whisper
+    restart: unless-stopped
+    ports:
+      - "${WHISPER_PORT:-9000}:9000"
+    environment:
+      - ASR_MODEL=${ASR_MODEL:-tiny}
+      - ASR_ENGINE=faster_whisper
+    volumes:
+      - whisper-cache:/root/.cache
+    profiles:
+      - cpu
 
   # Optional: uncomment to use Kokoro local TTS (GPU recommended)
   # kokoro-tts:
