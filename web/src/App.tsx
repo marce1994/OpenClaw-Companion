@@ -53,8 +53,7 @@ export default function App() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    if (viewMode === 'live2d' && messages.length > 0) showL2dChatBriefly();
-  }, [messages, viewMode, showL2dChatBriefly]);
+  }, [messages]);
 
   // Persist model selection
   useEffect(() => { localStorage.setItem('oc-model', selectedModel.id); }, [selectedModel]);
@@ -324,8 +323,7 @@ export default function App() {
             <Live2DAvatar modelPath={selectedModel.path} emotion={currentEmotion}
               audioRef={audioRef} status={appStatus} isPlaying={isPlaying} />
           </div>
-          <div className={`l2d-chat-overlay ${l2dChatVisible ? '' : 'l2d-chat-hidden'}`}
-            onScroll={() => showL2dChatBriefly()} onTouchStart={() => showL2dChatBriefly()}>
+          <div className="l2d-chat-overlay">
             {/* Model selector as horizontal scroll */}
             <div className="l2d-models">
               {AVAILABLE_MODELS.map(m => (
@@ -333,7 +331,8 @@ export default function App() {
                   onClick={() => setSelectedModel(m)}>{m.name}</button>
               ))}
             </div>
-            <div className="l2d-chat-scroll" onScroll={() => showL2dChatBriefly()}>
+            <div className={`l2d-chat-scroll ${l2dChatVisible ? 'l2d-revealed' : ''}`}
+              onScroll={() => showL2dChatBriefly()}>
               {messages.map(msg => <ChatBubble key={msg.id} message={msg} onButtonClick={handleButtonClick} />)}
               <div ref={chatEndRef} />
             </div>

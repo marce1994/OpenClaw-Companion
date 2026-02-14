@@ -138,13 +138,19 @@
   pointer-events: auto;
 }
 
-.l2d-chat-overlay .l2d-chat-scroll {
-  transition: opacity 0.6s ease;
+/* Individual bubbles auto-fade after appearing */
+.l2d-chat-scroll .chat-bubble {
+  animation: l2d-bubble-fade 0.6s ease 5s forwards;
 }
 
-.l2d-chat-overlay.l2d-chat-hidden .l2d-chat-scroll {
-  opacity: 0;
-  pointer-events: none;
+/* When scroll-revealed, all bubbles stay visible */
+.l2d-chat-scroll.l2d-revealed .chat-bubble {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+@keyframes l2d-bubble-fade {
+  to { opacity: 0; }
 }
 
 .l2d-chat-scroll {

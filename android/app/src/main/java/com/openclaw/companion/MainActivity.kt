@@ -399,25 +399,55 @@ class MainActivity : Activity() {
         }
         chatRecyclerViewL2d.adapter = chatAdapterL2d
 
-        // Auto-hide chat after inactivity, show on scroll or new message
-        val chatFadeHandler = android.os.Handler(mainLooper)
-        val chatFadeDelay = 4000L // 4 seconds
-        val chatFadeRunnable = Runnable {
-            chatRecyclerViewL2d.animate().alpha(0f).setDuration(600).start()
+        // Auto-fade: each bubble fades out after 5s, scroll reveals all temporarily
+        val fadeDelayMs = 5000L
+        val fadeHandler = android.os.Handler(mainLooper)
+        var l2dScrollRevealed = false
+        var l2dScrollHideRunnable: Runnable? = null
+
+        // Schedule fade for a single child view
+        fun scheduleFade(child: android.view.View) {
+            fadeHandler.postDelayed({
+                if (!l2dScrollRevealed) {
+                    child.animate().alpha(0f).setDuration(600).start()
+                }
+            }, fadeDelayMs)
         }
-        fun showL2dChat() {
-            chatFadeHandler.removeCallbacks(chatFadeRunnable)
-            chatRecyclerViewL2d.animate().alpha(1f).setDuration(200).start()
-            chatFadeHandler.postDelayed(chatFadeRunnable, chatFadeDelay)
-        }
-        // Show on scroll
+
+        // When a new item is added to L2D RecyclerView, auto-fade it
+        chatRecyclerViewL2d.addOnChildAttachStateChangeListener(object : RecyclerView.OnChildAttachStateChangeListener {
+            override fun onChildViewAttachedToWindow(view: android.view.View) {
+                if (!l2dScrollRevealed) {
+                    view.alpha = 1f
+                    scheduleFade(view)
+                }
+            }
+            override fun onChildViewDetachedFromWindow(view: android.view.View) {}
+        })
+
+        // Scroll reveals all bubbles, then hides after 4s of no scroll
         chatRecyclerViewL2d.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                if (dy != 0) showL2dChat()
+            override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
+                if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                    l2dScrollRevealed = true
+                    l2dScrollHideRunnable?.let { fadeHandler.removeCallbacks(it) }
+                    for (i in 0 until rv.childCount) {
+                        rv.getChildAt(i).animate().alpha(1f).setDuration(200).start()
+                    }
+                } else if (newState == RecyclerView.SCROLL_STATE_IDLE && l2dScrollRevealed) {
+                    val hideRunnable = Runnable {
+                        l2dScrollRevealed = false
+                        for (i in 0 until rv.childCount) {
+                            rv.getChildAt(i).animate().alpha(0f).setDuration(600).start()
+                        }
+                    }
+                    l2dScrollHideRunnable = hideRunnable
+                    fadeHandler.postDelayed(hideRunnable, 4000)
+                }
             }
         })
-        // Store reference for showing on new messages
-        this.showL2dChat = { showL2dChat() }
+        // No showL2dChat on new messages — only scroll reveals
+        this.showL2dChat = null
 
         // Attach button
         btnAttach = findViewById(R.id.btnAttach)
@@ -858,7 +888,6 @@ class MainActivity : Activity() {
         chatAdapterL2d.notifyItemInserted(chatMessages.size - 1)
         chatRecyclerView.scrollToPosition(chatMessages.size - 1)
         chatRecyclerViewL2d.scrollToPosition(chatMessages.size - 1)
-        showL2dChat?.invoke()
     }
 
     private fun updateLastAssistantMessage(text: String, emotion: String = "neutral", isStreaming: Boolean = true) {
@@ -870,7 +899,6 @@ class MainActivity : Activity() {
             chatAdapterL2d.notifyItemChanged(index)
             chatRecyclerView.scrollToPosition(index)
             chatRecyclerViewL2d.scrollToPosition(index)
-            showL2dChat?.invoke()
         } else {
             addChatMessage(ChatMessage(role = "assistant", text = text, emotion = emotion, isStreaming = isStreaming))
         }
