@@ -90,8 +90,7 @@ class MainActivity : Activity() {
     private lateinit var btnSettingsL2d: ImageButton
     private lateinit var btnCancelProcessL2d: ImageButton
     private lateinit var txtStatusL2d: TextView
-    private lateinit var txtTranscriptL2d: TextView
-    private lateinit var txtReplyL2d: TextView
+    // txtTranscriptL2d and txtReplyL2d removed — chat now uses RecyclerView in L2D mode
     private lateinit var txtSwipeCancelL2d: TextView
 
     // Chat RecyclerView
@@ -254,12 +253,10 @@ class MainActivity : Activity() {
 
     private fun setTranscriptText(text: String) {
         txtTranscript.text = text
-        txtTranscriptL2d.text = text
     }
 
     private fun setReplyText(text: String) {
         txtReply.text = text
-        txtReplyL2d.text = text
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -296,8 +293,7 @@ class MainActivity : Activity() {
         btnSettingsL2d = findViewById(R.id.btnSettingsL2d)
         btnCancelProcessL2d = findViewById(R.id.btnCancelProcessL2d)
         txtStatusL2d = findViewById(R.id.txtStatusL2d)
-        txtTranscriptL2d = findViewById(R.id.txtTranscriptL2d)
-        txtReplyL2d = findViewById(R.id.txtReplyL2d)
+        // txtTranscriptL2d/txtReplyL2d removed — L2D uses chatRecyclerViewL2d
         txtSwipeCancelL2d = findViewById(R.id.txtSwipeCancelL2d)
 
         // Shared views
