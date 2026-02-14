@@ -710,7 +710,8 @@ async function gwChatSend(message, opts, onDelta, onDone, signal) {
     };
     if (opts.attachments) params.attachments = opts.attachments;
     
-    const result = await gwRequest('chat.send', params, 60000);
+    const hasAttachments = params.attachments?.length > 0;
+    const result = await gwRequest('chat.send', params, hasAttachments ? 180000 : 60000);
     console.log(`🔌 chat.send result: ${JSON.stringify(result)}`);
     return runId;
   } catch (e) {

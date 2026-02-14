@@ -15,7 +15,8 @@ import java.util.Date
 class ChatAdapter(
     private val messages: List<ChatMessage>,
     private val markwon: Markwon,
-    private val onButtonClick: (String) -> Unit
+    private val onButtonClick: (String) -> Unit,
+    val transparent: Boolean = false
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     companion object {
@@ -39,8 +40,19 @@ class ChatAdapter(
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         val msg = messages[position]
-        if (holder is UserViewHolder) holder.bind(msg)
-        else if (holder is AssistantViewHolder) holder.bind(msg)
+        if (holder is UserViewHolder) {
+            holder.bind(msg)
+            if (transparent) {
+                val bubble = (holder.itemView as ViewGroup).getChildAt(0)
+                bubble?.setBackgroundResource(R.drawable.bubble_user_transparent)
+            }
+        } else if (holder is AssistantViewHolder) {
+            holder.bind(msg)
+            if (transparent) {
+                val bubble = (holder.itemView as ViewGroup).getChildAt(0)
+                bubble?.setBackgroundResource(R.drawable.bubble_assistant_transparent)
+            }
+        }
     }
 
     override fun getItemCount() = messages.size

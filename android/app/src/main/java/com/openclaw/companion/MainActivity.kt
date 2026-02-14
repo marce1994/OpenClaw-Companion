@@ -389,10 +389,10 @@ class MainActivity : Activity() {
 
         // Live2D chat recycler (shares same data)
         chatRecyclerViewL2d = findViewById(R.id.chatRecyclerViewL2d)
-        chatAdapterL2d = ChatAdapter(chatMessages, markwon) { buttonValue ->
+        chatAdapterL2d = ChatAdapter(chatMessages, markwon, { buttonValue ->
             sendWs(JSONObject().put("type", "text").put("text", buttonValue))
             addChatMessage(ChatMessage(role = "user", text = buttonValue))
-        }
+        }, transparent = true)
         chatRecyclerViewL2d.layoutManager = LinearLayoutManager(this).apply {
             stackFromEnd = true
         }
