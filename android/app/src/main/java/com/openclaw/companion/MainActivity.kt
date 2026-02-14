@@ -1064,6 +1064,11 @@ class MainActivity : Activity() {
             != PackageManager.PERMISSION_GRANTED) return
 
         isSmartListening = true
+
+        // Enable full communication audio mode for hardware echo cancellation
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+
         handler.post {
             setStatusText(getString(R.string.status_smart_listening))
             setActiveState(OrbView.State.IDLE)
@@ -1215,6 +1220,9 @@ class MainActivity : Activity() {
         isSmartListening = false
         smartRecordThread?.interrupt()
         smartRecordThread = null
+        // Restore normal audio mode
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_NORMAL
         handler.post {
             getActiveTalkBtn().alpha = 1.0f
             if (isConnected) {
@@ -1841,7 +1849,7 @@ class MainActivity : Activity() {
                     // Delay resume to avoid picking up TTS echo tail
                     handler.postDelayed({
                         smartPaused = false
-                    }, 500)
+                    }, 1000)
                     handler.post {
                         setActiveAmplitude(0f)
                         if (listenMode == "smart_listen" && isConnected) {
