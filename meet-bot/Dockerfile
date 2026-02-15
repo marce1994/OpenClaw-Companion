@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     alsa-utils \
     procps \
     dbus \
+    libegl1-mesa \
+    curl \
     && pip3 install --break-system-packages edge-tts \
     && rm -rf /var/lib/apt/lists/*
 

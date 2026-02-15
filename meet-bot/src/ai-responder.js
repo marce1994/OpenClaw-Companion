@@ -98,7 +98,7 @@ class AIResponder extends EventEmitter {
         method: 'connect',
         params: {
           client: {
-            id: 'meet-bot',
+            id: 'gateway-client',
             displayName: 'OpenClaw Meet Bot',
             mode: 'backend',
             version: '1.0.0',
@@ -131,13 +131,28 @@ class AIResponder extends EventEmitter {
 
     // JSON-RPC response
     if (msg.type === 'res' && msg.id) {
+      console.log(LOG, `RPC response id=${msg.id} ok=${msg.ok} payload=${JSON.stringify(msg.payload || {}).substring(0,200)}`);
       const pending = this.pendingRequests.get(msg.id);
       if (pending) {
         clearTimeout(pending.timeout);
         this.pendingRequests.delete(msg.id);
         pending.resolve(msg.payload);
       }
+
+      // If this is a chat.send response with text, handle it
+      if (msg.payload?.text && this.processing) {
+        console.log(LOG, `Got response text from RPC: "${msg.payload.text.substring(0,100)}"`);
+        this._handleAIResponse(msg.payload.text);
+      }
       return;
+    }
+
+    // Log all messages for debugging
+    if (msg.type !== 'event' || !msg.event?.startsWith('tick')) {
+      // Don't log ticks, log everything else
+      if (msg.type === 'event') {
+        console.log(LOG, `WS event: ${msg.event} payload=${JSON.stringify(msg.payload || {}).substring(0,150)}`);
+      }
     }
 
     // Agent events (streaming response)
@@ -147,13 +162,34 @@ class AIResponder extends EventEmitter {
 
       // Filter by session key
       const sessionKey = `${config.gwSessionKey}-${this.meetingId || 'default'}`;
+      if (evt.startsWith('agent.')) {
+        console.log(LOG, `Event: ${evt} sessionKey=${p.sessionKey || '?'} expected=${sessionKey}`);
+      }
       if (p.sessionKey && p.sessionKey !== sessionKey) return;
 
+      // Handle both old-style (agent.lifecycle/agent.text.delta) and new-style (agent with stream/data)
       if (evt === 'agent.lifecycle' && p.phase === 'start') {
         this.accumulatedText = '';
         this.activeRun = { runId: p.runId };
       } else if (evt === 'agent.text.delta') {
         this.accumulatedText += (p.delta || '');
+      } else if (evt === 'agent' && p.stream === 'lifecycle' && p.data?.phase === 'start') {
+        this.accumulatedText = '';
+        this.activeRun = { runId: p.runId };
+        console.log(LOG, `Agent run started: ${p.runId}`);
+      } else if (evt === 'agent' && p.stream === 'assistant' && p.data?.text) {
+        // New-style agent event with cumulative text
+        this.accumulatedText = p.data.text;
+        if (!this.activeRun) this.activeRun = { runId: p.runId };
+      } else if (evt === 'agent' && p.stream === 'lifecycle' && p.data?.phase === 'end') {
+        const fullText = this.accumulatedText;
+        this.accumulatedText = '';
+        this.activeRun = null;
+        if (fullText) {
+          console.log(LOG, `AI response: "${fullText.substring(0, 100)}..."`);
+          this._handleAIResponse(fullText);
+        }
+        this.processing = false;
       } else if (evt === 'agent.lifecycle' && p.phase === 'end') {
         const fullText = this.accumulatedText;
         this.accumulatedText = '';
@@ -163,8 +199,8 @@ class AIResponder extends EventEmitter {
           this._handleAIResponse(fullText);
         }
         this.processing = false;
-      } else if (evt === 'agent.error') {
-        console.error(LOG, 'Agent error:', p.error);
+      } else if (evt === 'agent.error' || (evt === 'agent' && p.stream === 'error')) {
+        console.error(LOG, 'Agent error:', p.error || p.data);
         this.processing = false;
         this.accumulatedText = '';
       }
@@ -187,13 +223,34 @@ class AIResponder extends EventEmitter {
     const botName = config.botName.toLowerCase();
 
     const isSummary = /\b(resumen|summary|resumir)\b/i.test(text);
-    const isTrigger = text.includes(botName);
+    // Match bot name + common Whisper mis-transcriptions
+    const nameVariants = [botName, 'jervis', 'jarves', 'jarvis', 'shervis', 'charvis', 'jarviz', 'jarbi', 'jarby', 'yarvis', 'xervis', 'charbis', 'jarbis', 'chervis', 'gervis', 'harvis'];
+    const isTrigger = nameVariants.some(v => text.includes(v));
+
+    console.log(LOG, `Trigger check: "${text.substring(0,50)}" botName="${botName}" found=${isTrigger} connected=${this.connected} processing=${this.processing}`);
 
     if (isSummary && isTrigger) {
       this._requestSummary();
     } else if (isTrigger) {
       this._respondToMention(entry.text);
+    } else if (!this.processing) {
+      // Proactive mode: respond to all speech, let the AI decide if it should respond
+      this._respondProactive(entry.text);
     }
+  }
+
+  _respondProactive(transcriptText) {
+    if (this.processing) return;
+    this.processing = true;
+
+    const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || '?'}]: ${t.text}`).join('\n');
+
+    const message = `Estás en una reunión de Google Meet como ${config.botName}. `
+      + `Escuchás la conversación. Solo respondé si podés aportar algo útil (responder una pregunta, dar info, opinar). `
+      + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP". No digas nada más que "SKIP" si no tenés nada que aportar.\n\n`
+      + `Contexto reciente:\n${context}\n\nÚltimo: "${transcriptText}"`;
+
+    this._sendChat(message);
   }
 
   _respondToMention(triggerText) {
@@ -242,6 +299,7 @@ ${transcript}`;
   }
 
   _sendChat(message) {
+    console.log(LOG, `Sending chat (connected=${this.connected}): "${message.substring(0,80)}..."`);
     if (!this.connected) {
       console.error(LOG, 'Not connected to Gateway');
       this.processing = false;
@@ -251,6 +309,18 @@ ${transcript}`;
     const sessionKey = `${config.gwSessionKey}-${this.meetingId || 'default'}`;
     const id = this._nextId();
 
+    // Store pending request to handle response
+    this.pendingRequests.set(id, {
+      resolve: (payload) => {
+        console.log(LOG, `chat.send response received`);
+      },
+      timeout: setTimeout(() => {
+        console.log(LOG, 'chat.send timeout — resetting processing');
+        this.pendingRequests.delete(id);
+        this.processing = false;
+      }, 60000),
+    });
+
     this._send({
       type: 'req',
       id,
@@ -258,13 +328,27 @@ ${transcript}`;
       params: {
         sessionKey,
         message,
-        user: `meet-${this.meetingId || 'bot'}`,
+        idempotencyKey: crypto.randomUUID(),
       },
     });
+
+    // Safety: reset processing after 30s if no response
+    setTimeout(() => {
+      if (this.processing) {
+        console.log(LOG, 'Processing timeout — resetting');
+        this.processing = false;
+      }
+    }, 30000);
   }
 
   async _handleAIResponse(text) {
     try {
+      // Skip if AI decided not to respond
+      if (text.trim() === 'SKIP' || text.trim() === 'NO_REPLY' || text.trim() === 'HEARTBEAT_OK') {
+        console.log(LOG, 'AI skipped (no relevant response)');
+        this.processing = false;
+        return;
+      }
       const audioBuffer = await this._getTTS(text);
       if (audioBuffer?.length > 0) {
         // Start lip sync animation
@@ -308,7 +392,7 @@ ${transcript}`;
       const body = JSON.stringify({ text, voice, lang: this.detectedLang, speed: 1.0 });
       const req = http.request({
         hostname: url.hostname, port: url.port,
-        path: '/v1/audio/speech', method: 'POST',
+        path: '/tts', method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
         timeout: 30000,
       }, (res) => {

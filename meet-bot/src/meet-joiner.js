@@ -83,14 +83,16 @@ class MeetJoiner extends EventEmitter {
     const args = [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--use-fake-ui-for-media-stream',
-      '--use-fake-device-for-media-stream',
-      '--use-file-for-fake-audio-capture=/tmp/silence.wav',
+      '--enable-webgl',
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader',
+      '--use-fake-ui-for-media-stream',       // Auto-allow mic/camera prompts
       '--autoplay-policy=no-user-gesture-required',
       '--window-size=1280,720',
       '--disable-features=WebRtcHideLocalIpsWithMdns',
       '--disable-dev-shm-usage',
+      '--alsa-output-device=pulse',            // Route audio through PulseAudio
       '--disable-extensions',
       '--no-first-run',
       '--no-default-browser-check',
@@ -178,14 +180,32 @@ class MeetJoiner extends EventEmitter {
           return stream;
         };
 
-        // Also intercept addTrack on RTCPeerConnection for live replacement
-        const origAddTrack = RTCPeerConnection.prototype.addTrack;
+        // Intercept RTCPeerConnection to capture senders and instances
         window._rtcSenders = [];
-        RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
+        window._meetPeerConnections = [];
+
+        const OrigRTCPC = window.RTCPeerConnection;
+        
+        // Proxy the constructor to capture instances
+        window.RTCPeerConnection = new Proxy(OrigRTCPC, {
+          construct(target, args) {
+            const pc = new target(...args);
+            window._meetPeerConnections.push(pc);
+            console.log('[Live2D] Captured RTCPeerConnection instance (' + window._meetPeerConnections.length + ')');
+            return pc;
+          }
+        });
+        // Keep prototype chain intact
+        window.RTCPeerConnection.prototype = OrigRTCPC.prototype;
+        Object.defineProperty(window.RTCPeerConnection, 'name', { value: 'RTCPeerConnection' });
+
+        // Also intercept addTrack to capture video senders
+        const origAddTrack = OrigRTCPC.prototype.addTrack;
+        OrigRTCPC.prototype.addTrack = function(track, ...streams) {
           const sender = origAddTrack.call(this, track, ...streams);
           if (track.kind === 'video') {
             window._rtcSenders.push(sender);
-            console.log('[Live2D] Captured RTC video sender for replacement');
+            console.log('[Live2D] Captured RTC video sender (' + window._rtcSenders.length + ')');
           }
           return sender;
         };

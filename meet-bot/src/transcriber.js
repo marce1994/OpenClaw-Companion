@@ -162,8 +162,9 @@ class Transcriber extends EventEmitter {
     return new Promise((resolve, reject) => {
       const url = new URL(config.whisperUrl);
       // Don't set language — let Whisper auto-detect for bilingual meetings
-      // url.searchParams.set('language', config.whisperLang);
       url.searchParams.set('output', 'json');
+      // Bias Whisper to recognize the bot name correctly
+      url.searchParams.set('initial_prompt', `Jarvis, ${config.botName}`);
 
       const boundary = '----FormBoundary' + Date.now().toString(16);
       const preamble = Buffer.from(

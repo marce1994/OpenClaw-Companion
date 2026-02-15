@@ -34,7 +34,8 @@ meetJoiner.on('joined', async () => {
   aiResponder.connect();
 
   // Inject Live2D avatar into Meet page
-  if (config.live2dEnabled && meetJoiner.page) {
+  if (config.live2dEnabled && meetJoiner.page && meetJoiner.browser) {
+    await live2d.start(meetJoiner.browser);
     const success = await live2d.injectIntoMeet(meetJoiner.page);
     if (success) {
       console.log(LOG, 'Live2D avatar active as camera feed');
