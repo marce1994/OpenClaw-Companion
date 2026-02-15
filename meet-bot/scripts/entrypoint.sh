@@ -1,12 +1,18 @@
 #!/bin/bash
 set -e
 
+echo "[Entrypoint] Cleaning up stale X locks..."
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
+
 echo "[Entrypoint] Starting Xvfb on :99..."
 Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
 XVFB_PID=$!
 sleep 1
 
 echo "[Entrypoint] Starting PulseAudio..."
+pulseaudio --kill 2>/dev/null || true
+rm -f /tmp/pulse-*/pid 2>/dev/null || true
+sleep 0.5
 pulseaudio --daemonize --no-cpu-limit --disable-shm=true --exit-idle-time=-1 \
   --system=false --log-level=warning 2>/dev/null || true
 sleep 1

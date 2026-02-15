@@ -22,6 +22,8 @@ class AIResponder extends EventEmitter {
     this.pendingRequests = new Map();
     this.activeRun = null; // { text, onDone }
     this.accumulatedText = '';
+    this.reconnectAttempts = 0;
+    this.detectedLang = config.defaultLang || 'es'; // Current meeting language
   }
 
   setMeetingId(id) { this.meetingId = id; }
@@ -77,10 +79,13 @@ class AIResponder extends EventEmitter {
 
   _scheduleReconnect() {
     if (this.reconnectTimer) return;
+    const delay = Math.min(5000 * Math.pow(1.5, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+    console.log(LOG, `Reconnecting in ${(delay/1000).toFixed(1)}s (attempt ${this.reconnectAttempts})...`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, 5000);
+    }, delay);
   }
 
   _handleMessage(msg) {
@@ -99,16 +104,28 @@ class AIResponder extends EventEmitter {
             version: '1.0.0',
             platform: 'node',
           },
+          role: 'operator',
+          scopes: ['operator.admin'],
+          minProtocol: 3,
+          maxProtocol: 3,
           auth: { token: config.gatewayToken },
         },
       });
       return;
     }
 
-    // Step 2: connect response (hello-ok)
-    if (msg.type === 'res' && msg.payload?.protocol) {
+    // Step 2: connect response (hello-ok) — can come as standalone or wrapped in res
+    if (msg.type === 'hello-ok' || (msg.type === 'res' && msg.ok && msg.payload?.type === 'hello-ok')) {
       this.connected = true;
-      console.log(LOG, `Authenticated (protocol v${msg.payload.protocol})`);
+      this.reconnectAttempts = 0;
+      const info = msg.type === 'hello-ok' ? msg : msg.payload;
+      console.log(LOG, `Authenticated (protocol v${info?.protocol || '?'}, server ${info?.server?.version || '?'})`);
+      return;
+    }
+
+    // Error response (auth failure, etc.)
+    if (msg.type === 'res' && msg.ok === false) {
+      console.error(LOG, 'Request failed:', JSON.stringify(msg.error || msg.payload || msg));
       return;
     }
 
@@ -160,6 +177,12 @@ class AIResponder extends EventEmitter {
       this.recentTranscripts.shift();
     }
 
+    // Use Whisper's language detection
+    if (entry.language && entry.language !== this.detectedLang) {
+      console.log(LOG, `Language switched: ${this.detectedLang} → ${entry.language}`);
+      this.detectedLang = entry.language;
+    }
+
     const text = entry.text.toLowerCase();
     const botName = config.botName.toLowerCase();
 
@@ -182,7 +205,11 @@ class AIResponder extends EventEmitter {
       .map(t => `${t.speaker || 'Participant'}: ${t.text}`)
       .join('\n');
 
-    const prompt = `Estás en una reunión de Google Meet como ${config.botName}. Alguien te mencionó. Respondé de forma natural y concisa (1-3 oraciones, se va a leer en voz alta).
+    const langInstruction = this.detectedLang === 'en'
+      ? `You are in a Google Meet call as ${config.botName}. Someone mentioned you. Reply naturally and concisely (1-3 sentences, it will be read aloud). Reply in English.`
+      : `Estás en una reunión de Google Meet como ${config.botName}. Alguien te mencionó. Respondé de forma natural y concisa (1-3 oraciones, se va a leer en voz alta). Respondé en español.`;
+
+    const prompt = `${langInstruction}
 
 Contexto reciente:
 ${context}
@@ -202,7 +229,11 @@ Mensaje que te mencionó: "${triggerText}"`;
       return;
     }
 
-    const prompt = `Hacé un resumen breve de esta reunión hasta ahora. Mencioná los temas principales y decisiones tomadas. Máximo 30 segundos hablado.
+    const langInstruction = this.detectedLang === 'en'
+      ? 'Give a brief summary of this meeting so far. Mention key topics and decisions. Max 30 seconds spoken. Reply in English.'
+      : 'Hacé un resumen breve de esta reunión hasta ahora. Mencioná los temas principales y decisiones tomadas. Máximo 30 segundos hablado. Respondé en español.';
+
+    const prompt = `${langInstruction}
 
 Transcripción:
 ${transcript}`;
@@ -236,7 +267,10 @@ ${transcript}`;
     try {
       const audioBuffer = await this._getTTS(text);
       if (audioBuffer?.length > 0) {
+        // Start lip sync animation
+        this.emit('speaking-start');
         await this.audioPipeline.injectAudio(audioBuffer, 'wav');
+        this.emit('speaking-end');
         console.log(LOG, 'Audio injected into meeting');
       }
 
@@ -270,7 +304,8 @@ ${transcript}`;
   _kokoroTTS(text) {
     return new Promise((resolve, reject) => {
       const url = new URL(config.kokoroUrl);
-      const body = JSON.stringify({ text, voice: config.kokoroVoice, speed: 1.0 });
+      const voice = this.detectedLang === 'en' ? config.kokoroVoiceEn : config.kokoroVoice;
+      const body = JSON.stringify({ text, voice, lang: this.detectedLang, speed: 1.0 });
       const req = http.request({
         hostname: url.hostname, port: url.port,
         path: '/v1/audio/speech', method: 'POST',
@@ -292,7 +327,8 @@ ${transcript}`;
     const { execSync } = require('child_process');
     const fs = require('fs');
     const tmp = `/tmp/tts_${Date.now()}.wav`;
-    execSync(`edge-tts --voice "${config.ttsVoice}" --text "${text.replace(/"/g, '\\"')}" --write-media ${tmp} 2>/dev/null`, { timeout: 30000 });
+    const voice = this.detectedLang === 'en' ? 'en-US-GuyNeural' : config.ttsVoice;
+    execSync(`edge-tts --voice "${voice}" --text "${text.replace(/"/g, '\\"')}" --write-media ${tmp} 2>/dev/null`, { timeout: 30000 });
     const buf = fs.readFileSync(tmp);
     try { fs.unlinkSync(tmp); } catch {}
     return buf;

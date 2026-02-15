@@ -114,11 +114,13 @@ class Transcriber extends EventEmitter {
       }
       this.lastTranscript = text;
 
-      console.log(LOG, `Transcript: "${text}"`);
+      const lang = result.language || null;
+      console.log(LOG, `Transcript [${lang || '?'}]: "${text}"`);
       this.emit('transcript', {
         text,
         timestamp: Date.now(),
         speaker: null, // Speaker diarization is Phase 2
+        language: lang,
       });
     } catch (err) {
       console.error(LOG, 'Transcription error:', err.message);
@@ -159,7 +161,8 @@ class Transcriber extends EventEmitter {
   _sendToWhisper(wavBuffer) {
     return new Promise((resolve, reject) => {
       const url = new URL(config.whisperUrl);
-      url.searchParams.set('language', config.whisperLang);
+      // Don't set language — let Whisper auto-detect for bilingual meetings
+      // url.searchParams.set('language', config.whisperLang);
       url.searchParams.set('output', 'json');
 
       const boundary = '----FormBoundary' + Date.now().toString(16);

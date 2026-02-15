@@ -16,6 +16,9 @@ Your AI, alive. Talk to an animated Live2D avatar through voice or text — Andr
 - **Conversation memory** — 10-exchange sliding window, persists across reconnects
 - **Smart Listen mode** — ambient always-on listening with wake word detection
 - **Speaker identification** — auto-enrolls voices, recognizes speakers, prioritizes the owner
+- **Google Meet bot** — joins meetings with Live2D avatar, listens, responds when mentioned
+- **Bilingual TTS** — auto-detects meeting/conversation language (EN/ES) and responds accordingly
+- **Calendar auto-join** — automatically joins Google Meet calls from your calendar
 - **Vision & file analysis** — send images or text files for AI analysis
 - **Web search** — automatic DuckDuckGo search integration for factual queries
 - **Multiple TTS engines** — Kokoro (local GPU, ~460ms), Edge TTS (cloud, ~2300ms), XTTS v2 (local GPU, voice cloning)
@@ -31,33 +34,22 @@ Your AI, alive. Talk to an animated Live2D avatar through voice or text — Andr
 ┌──────────────┐                              ┌──────────────────────────────────┐
 │  Android App │◄──── WebSocket (WS/WSS) ────►│   Voice Server (Node.js)         │
 │  or Web App  │   audio/text/images/files     │   Port 3200 (WS) / 3443 (WSS)   │
-│              │◄── reply_chunk ──────────────│                                  │
-│  • Voice     │◄── audio_chunk ─────────────│   ┌──────────────┐               │
-│  • Avatar    │◄── buttons ─────────────────│   │ Speaker ID   │ (Python)      │
-│  • Text chat │                              │   │ :3201        │               │
-└──────────────┘                              │   │ + Web Search │               │
-                                              │   └──────────────┘               │
-                                              │          │                       │
-                                              │          ▼                       │
-                                              │   ┌──────────────┐              │
-                                              │   │ Whisper ASR   │ :9000       │
-                                              │   │ large-v3-turbo│              │
-                                              │   └──────────────┘              │
-                                              │          │                       │
-                                              │          ▼                       │
-                                              │   ┌──────────────────────┐      │
-                                              │   │ OpenClaw Gateway      │      │
-                                              │   │ HTTP or WebSocket     │      │
-                                              │   │ :18789               │      │
-                                              │   └──────────────────────┘      │
-                                              │          │                       │
-                                              │          ▼                       │
-                                              │   ┌──────────────┐              │
-                                              │   │ TTS Engine    │              │
-                                              │   │ Kokoro :5004  │              │
-                                              │   │ XTTS   :5002  │              │
-                                              │   │ Edge (cloud)  │              │
-                                              │   └──────────────┘              │
+└──────────────┘                              └──────────┬───────────────────────┘
+                                                         │
+┌──────────────┐                              ┌──────────▼───────────────────────┐
+│  Google Meet │◄── Puppeteer + PulseAudio ──►│   Meet Bot (Node.js)             │
+│  (browser)   │   audio capture/inject       │   Port 3300                      │
+│              │◄── Live2D canvas stream       │   • Calendar auto-join (ICS)     │
+└──────────────┘                              │   • Bilingual EN/ES auto-detect  │
+                                              └──────────┬───────────────────────┘
+                                                         │
+                                              ┌──────────▼───────────────────────┐
+                                              │   Shared Services                │
+                                              │                                  │
+                                              │   Whisper ASR (:9000)  ◄── GPU   │
+                                              │   Kokoro TTS  (:5004)  ◄── GPU   │
+                                              │   XTTS v2     (:5002)  ◄── GPU   │
+                                              │   OpenClaw Gateway (:18789)      │
                                               └──────────────────────────────────┘
 ```
 
@@ -147,6 +139,41 @@ docker compose logs -f whisper         # Just Whisper ASR
 
 For detailed setup instructions, see [**server/README.md**](server/README.md).
 
+## 🤖 Google Meet Bot
+
+An AI participant that joins your Google Meet calls with an animated Live2D avatar.
+
+**Features:**
+- Joins meetings as a guest named "Jarvis" (configurable)
+- Live2D avatar rendered as camera feed (Mao, Hiyori, or Rice)
+- Listens to all participants via PulseAudio virtual devices
+- Responds when mentioned by name
+- Auto-detects language (EN/ES) via Whisper and responds accordingly
+- Bilingual TTS (Kokoro for speed, Edge as fallback)
+- Meeting transcript saved as markdown
+- Calendar auto-join from Google Calendar ICS feed
+
+**Quick start:**
+```bash
+cd meet-bot
+docker build -t meet-bot .
+docker run -d --name meet-bot --network host \
+  -e GATEWAY_WS_URL=ws://127.0.0.1:18789 \
+  -e GATEWAY_TOKEN=your-token \
+  -e BOT_NAME=Jarvis \
+  -e LIVE2D_MODEL=Mao \
+  meet-bot
+
+# Join a meeting
+curl -X POST http://localhost:3300/join \
+  -H 'Content-Type: application/json' \
+  -d '{"meetLink":"https://meet.google.com/abc-defg-hij"}'
+```
+
+**Optional: Calendar auto-join** — add `-e GOOGLE_CALENDAR_ICS=<your-private-ics-url>` to automatically join meetings from your Google Calendar.
+
+See [**meet-bot/README.md**](meet-bot/README.md) for full documentation.
+
 ## 📂 Project Structure
 
 ```
@@ -161,14 +188,31 @@ openclaw-companion/
 │   ├── package.json                 Node.js dependencies
 │   ├── .env.example                 Configuration template
 │   └── README.md                    📖 Detailed server docs & API reference
-├── android/                         Android app (Kotlin + JetpackCompose)
+├── meet-bot/                        Google Meet bot
+│   ├── Dockerfile                   Container image (Chromium + PulseAudio + Xvfb)
+│   ├── src/
+│   │   ├── index.js                 HTTP API + event wiring
+│   │   ├── meet-joiner.js           Puppeteer Meet login/join
+│   │   ├── audio-pipeline.js        PulseAudio capture/inject
+│   │   ├── transcriber.js           VAD + Whisper ASR
+│   │   ├── ai-responder.js          Gateway WS + bilingual TTS
+│   │   ├── live2d-canvas.js         Live2D avatar → WebRTC camera
+│   │   ├── calendar-sync.js         ICS feed → auto-join scheduler
+│   │   ├── meeting-memory.js        Transcript storage
+│   │   └── config.js                Environment config
+│   ├── public/live2d/               Live2D model assets
+│   └── scripts/                     Entrypoint + audio setup
+├── android/                         Android app (Kotlin)
 │   ├── Dockerfile                   Docker-based APK build
 │   ├── build.gradle                 App configuration
 │   └── README.md                    📖 Android setup & build guide
 ├── web/                             Web client (React + TypeScript + Vite)
 │   ├── vite.config.ts               Build configuration
-│   ├── src/components               React components
+│   ├── src/components/              React components
 │   └── README.md                    📖 Web client setup & deployment guide
+├── docs/
+│   └── ARCHITECTURE.md              📖 Full architecture & protocol spec
+├── PLAN.md                          📖 Development roadmap
 └── README.md                        This file
 ```
 

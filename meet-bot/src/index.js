@@ -1,4 +1,6 @@
 const http = require('http');
+const fs = require('fs');
+const pathModule = require('path');
 const config = require('./config');
 const MeetJoiner = require('./meet-joiner');
 const AudioPipeline = require('./audio-pipeline');
@@ -6,6 +8,7 @@ const Transcriber = require('./transcriber');
 const AIResponder = require('./ai-responder');
 const MeetingMemory = require('./meeting-memory');
 const Live2DCanvas = require('./live2d-canvas');
+const CalendarSync = require('./calendar-sync');
 
 const LOG = '[MeetBot]';
 
@@ -16,6 +19,7 @@ const transcriber = new Transcriber(audioPipeline);
 const aiResponder = new AIResponder(audioPipeline, memory);
 const meetJoiner = new MeetJoiner();
 const live2d = new Live2DCanvas();
+const calendar = new CalendarSync();
 
 // --- Wire up events ---
 transcriber.on('transcript', (entry) => {
@@ -23,21 +27,87 @@ transcriber.on('transcript', (entry) => {
   aiResponder.onTranscript(entry);
 });
 
-meetJoiner.on('joined', () => {
+meetJoiner.on('joined', async () => {
   console.log(LOG, 'Joined meeting — starting audio pipeline');
   audioPipeline.startCapture();
   transcriber.start();
   aiResponder.connect();
-  live2d.start();
+
+  // Inject Live2D avatar into Meet page
+  if (config.live2dEnabled && meetJoiner.page) {
+    const success = await live2d.injectIntoMeet(meetJoiner.page);
+    if (success) {
+      console.log(LOG, 'Live2D avatar active as camera feed');
+
+      // Try to enable camera in Meet now that we have Live2D
+      try {
+        await meetJoiner.page.evaluate(() => {
+          // Click camera toggle to turn it ON
+          const camBtn = document.querySelector(
+            '[aria-label*="camera" i][data-is-muted="true"], ' +
+            '[aria-label*="cámara" i][data-is-muted="true"]'
+          );
+          if (camBtn) {
+            camBtn.click();
+            console.log('[MeetBot] Enabled camera for Live2D');
+          }
+        });
+      } catch (e) {
+        console.log(LOG, 'Could not auto-enable camera:', e.message);
+      }
+    }
+  }
+});
+
+// Lip sync during TTS playback
+aiResponder.on('speaking-start', () => {
+  if (config.live2dEnabled && meetJoiner.page && live2d.active) {
+    live2d.startLipSync(meetJoiner.page);
+  }
+});
+
+aiResponder.on('speaking-end', () => {
+  if (config.live2dEnabled && meetJoiner.page && live2d.active) {
+    live2d.stopLipSync(meetJoiner.page);
+  }
 });
 
 meetJoiner.on('meeting-ended', async () => {
   console.log(LOG, 'Meeting ended — cleaning up');
   await stopPipeline();
+  calendar.onMeetingEnded();
   const filePath = await memory.endMeeting();
   if (filePath) {
     console.log(LOG, `Transcript saved: ${filePath}`);
   }
+});
+
+// --- Calendar auto-join ---
+calendar.on('join', async ({ meetLink, event }) => {
+  if (meetJoiner.getState() !== 'idle' && meetJoiner.getState() !== 'error') {
+    console.log(LOG, `Calendar: can't auto-join "${event.summary}" — already in a meeting`);
+    return;
+  }
+
+  console.log(LOG, `Calendar: auto-joining "${event.summary}"`);
+  memory.startMeeting(meetLink, event.summary);
+  aiResponder.setMeetingId(extractMeetId(meetLink));
+
+  meetJoiner.join(meetLink).catch(err => {
+    console.error(LOG, 'Calendar auto-join error:', err.message);
+  });
+});
+
+calendar.on('leave', async ({ event }) => {
+  if (meetJoiner.getState() === 'idle') return;
+
+  console.log(LOG, `Calendar: event "${event.summary}" ended — auto-leaving`);
+  meetJoiner.leave().then(async () => {
+    const filePath = await memory.endMeeting();
+    if (filePath) console.log(LOG, `Transcript saved: ${filePath}`);
+  }).catch(err => {
+    console.error(LOG, 'Calendar auto-leave error:', err.message);
+  });
 });
 
 meetJoiner.on('left', async () => {
@@ -65,6 +135,32 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${config.meetPort}`);
   const method = req.method;
 
+  // Serve static files from /public
+  if (method === 'GET' && (url.pathname.startsWith('/live2d') || url.pathname === '/live2d.html')) {
+    const safePath = url.pathname.replace(/\.\./g, '');
+    const filePath = pathModule.join(__dirname, '..', 'public', safePath);
+
+    try {
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        const ext = pathModule.extname(filePath).toLowerCase();
+        const mimeTypes = {
+          '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json',
+          '.png': 'image/png', '.jpg': 'image/jpeg', '.moc3': 'application/octet-stream',
+          '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
+        };
+        res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        const stream = fs.createReadStream(filePath);
+        stream.pipe(res);
+        return;
+      }
+    } catch (e) { /* fall through to 404 */ }
+
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
   res.setHeader('Content-Type', 'application/json');
 
   try {
@@ -78,6 +174,10 @@ const server = http.createServer(async (req, res) => {
         meetLink: meetJoiner.meetLink,
         transcriptEntries: memory.entries.length,
         capturing: audioPipeline.capturing,
+        calendar: {
+          enabled: calendar.enabled,
+          currentEvent: calendar.currentEvent?.summary || null,
+        },
       });
     }
 
@@ -213,7 +313,12 @@ server.listen(config.meetPort, () => {
   console.log(LOG, `Whisper: ${config.whisperUrl}`);
   console.log(LOG, `Gateway: ${config.gatewayWsUrl}`);
   console.log(LOG, `TTS: ${config.ttsEngine} (${config.ttsEngine === 'kokoro' ? config.kokoroUrl : config.ttsVoice})`);
+  console.log(LOG, `Live2D: ${config.live2dEnabled ? config.live2dModel : 'disabled'}`);
+  console.log(LOG, `Calendar: ${config.calendarIcsUrl ? 'enabled' : 'disabled (set GOOGLE_CALENDAR_ICS to enable)'}`);
   console.log(LOG, 'Ready. POST /join to start.');
+
+  // Start calendar sync
+  calendar.start();
 });
 
 // --- Graceful shutdown ---

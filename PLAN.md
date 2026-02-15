@@ -1,6 +1,6 @@
 # OpenClaw Companion — Development Plan
 
-> Last updated: 2026-02-09
+> Last updated: 2026-02-15
 
 ---
 
@@ -8,164 +8,155 @@
 
 - **App name**: OpenClaw Companion
 - **Package**: `com.openclaw.companion`
+- **Repo**: https://github.com/marce1994/OpenClaw-Companion
 - **Bot name**: Configurable by user (default: "Assistant")
 
 ---
 
-## MVP Features
+## Platforms
 
-### 1. Interaction Modes
-- [x] **Push-to-talk** (hold button) — default mode, works on screen and headphones
-- [ ] **Tap-to-talk + VAD** — tap to start, auto-detect end of speech (Silero VAD)
-- [ ] **Continuous conversation** — call-style loop after each response
-- [ ] **Configurable switch** between modes in settings
-- [x] **Headphones**: physical button support (hold to record)
-- [x] **Text mode** — keyboard input for noisy environments
+| Platform | Status | Stack |
+|----------|--------|-------|
+| **Android** | ✅ Production | Kotlin, Live2D, OkHttp WebSocket |
+| **Web** | ✅ Production | React + TypeScript + Vite, PixiJS Live2D |
+| **Google Meet Bot** | 🚧 Phase 1 | Node.js, Puppeteer, PulseAudio, Live2D |
+| **Windows Desktop** | 📋 Planned | KMP + Compose Desktop, floating avatar |
+| **iOS** | 📋 Planned | KMP / Swift |
 
-### 2. Audio
-- [x] **Streaming TTS** — response starts playing before full text is generated
-- [ ] **Interruptions** — stop audio if user starts speaking
-- [ ] **Sound feedback** — short tones on record start/stop
-- [x] **Vibration** — haptic feedback on activation
-- [ ] **Latency target** — <1s from end of speech to start of response
+---
 
-### 3. UI / Visual Design
-- [x] **Dark theme** — dark background, clean layout
-- [x] **Selectable animated avatars**:
-  - 🐾 Cute mascot (blinks, reacts)
-  - 👁️ Intelligent eye (Jarvis-style, futuristic)
-  - 🔮 Pulsing orb (ChatGPT/Grok-style, minimalist)
-- [x] **Animated states** per avatar:
-  - Idle — gentle breathing / blinking
-  - Listening — reacts to voice amplitude
-  - Thinking — processing animation
-  - Speaking — synced with audio response
-  - Error — distinct visual indicator
-- [x] **Lottie animations** — vector-based, lightweight, smooth
-- [x] **Portrait lock** — fixed vertical orientation
-- [x] **Minimal controls** visible: mic, keyboard, close
-- [x] **Smooth transitions** between states
+## Completed Features
 
-### 4. Session & Context
-- [x] **Unified session with Telegram** — shares conversation context
-- [ ] **Multi-turn context** — full history in session
-- [ ] **Conversation history** — searchable past conversations screen
-- [ ] **Real-time transcription** — optional toggle
+### Core
+- [x] Push-to-talk voice (hold button)
+- [x] Streaming sentence-by-sentence TTS
+- [x] 9 animated emotions (happy, sad, surprised, thinking, confused, laughing, neutral, angry, love)
+- [x] 7 Live2D avatars with dual mode (orb / Live2D immersive)
+- [x] Barge-in (interrupt AI mid-response)
+- [x] Conversation memory (10-exchange sliding window)
+- [x] Text chat with full markdown rendering
+- [x] Code blocks extracted as viewable artifacts
+- [x] Inline interactive buttons from AI
+- [x] File & image attachments for analysis
+- [x] Headphone media button & lock screen support (Android)
+- [x] Works over Tailscale / LAN / WAN
 
-### 5. Android Integration
-- [ ] **Assist app** — register with `VoiceInteractionService`, long-press Home opens app
-- [ ] **1x1 Widget** — mic button for quick activation
-- [x] **Persistent notification** — quick access from notification bar
-- [x] **Battery exclusion** — works with screen locked
-- [x] **Wake lock** — keeps service active in background
+### Smart Listen (v2)
+- [x] Ambient always-on listening with wake word detection
+- [x] Speaker identification (auto-enroll, recognize, owner priority)
+- [x] AMBIENT state with breathing orb animation
+- [x] Floating subtitle overlay (5s auto-hide, not chat bubbles)
+- [x] Segment accumulation (2s buffer before sending)
+- [x] Audio source auto-fallback (VOICE_COMMUNICATION → MIC)
+- [x] RMS debug indicator
+- [x] Auto-fade for unresponded smart listen messages
+- [x] Echo cancellation (3-layer: Android AEC + Whisper filtering + TTS pause)
 
-### 6. Settings
-- [x] Server URL
-- [x] Auth token
-- [ ] **Bot name** (customizable, used throughout UI)
-- [x] **Avatar selector** (mascot / eye / orb)
-- [ ] **Interaction mode** (push-to-talk / tap+VAD / continuous)
-- [x] Auto-play responses
-- [x] Vibration on/off
-- [ ] Show real-time transcription on/off
+### TTS
+- [x] Kokoro TTS — local GPU, ~460ms, bilingual EN/ES
+- [x] Edge TTS — cloud fallback, ~2300ms
+- [x] XTTS v2 — local GPU, voice cloning capable
+- [x] Runtime engine switching (from app settings or WS command)
+- [x] Automatic fallback chain (Kokoro → Edge)
+
+### Web Search
+- [x] Auto-detect search intent in ES/EN
+- [x] DuckDuckGo integration (no API key needed)
+
+### Infrastructure
+- [x] Docker Compose setup with interactive wizard (`setup.sh`)
+- [x] GitHub Actions CI/CD (auto-version, APK + Web build, Release, GitHub Pages)
+- [x] WSS/TLS via Tailscale HTTPS certificates
+- [x] Gateway WebSocket native integration (protocol v3)
+- [x] Session sync with sequence IDs and reconnect buffer
+
+### Google Meet Bot (Phase 1)
+- [x] Join Meet as guest with Puppeteer + Chromium
+- [x] Audio capture via PulseAudio virtual devices
+- [x] Whisper transcription with auto language detection
+- [x] Respond when bot name mentioned
+- [x] Bilingual TTS (Kokoro EN + ES, auto-switch)
+- [x] Meeting transcript with markdown export
+- [x] Calendar auto-join via private ICS feed
+- [x] Live2D avatar injection as camera feed (implemented, not yet tested)
+- [x] Lip sync animation during TTS
+- [x] HTTP API (join/leave/status/transcript)
+
+---
+
+## In Progress
+
+### Google Meet Bot — Testing & Polish
+- [ ] End-to-end test with Live2D camera in real Meet
+- [ ] Bot-to-bot automated testing
+- [ ] Google Calendar API integration (create meetings)
+- [ ] Meeting summary generation
+
+### Smart Listen v2 Testing
+- [ ] End-to-end test of 6 improvements (commit `b421957`)
+
+---
+
+## Planned
+
+### Phase Next — Windows Desktop
+- [ ] KMP + Compose Desktop
+- [ ] Floating transparent avatar window (desktop pet)
+- [ ] Always-on-top, click-through background
+- [ ] System tray integration
+
+### Phase Next — iOS
+- [ ] KMP shared module or native Swift
+- [ ] Live2D avatar
+- [ ] Voice interaction
+
+### Optimization
+- [ ] TTS latency target: ~460ms → ~200ms
+- [ ] XTTS voice cloning with Pablo's voice
+- [ ] Whisper optimization for Meet (multi-speaker)
+
+### Polish
+- [ ] Android Assist app (long-press Home)
+- [ ] 1x1 home screen widget
+- [ ] Conversation history search
+- [ ] Usage stats screen (tokens, costs, model info)
+- [ ] Wake word via Picovoice (offline)
+- [ ] Container reuse for call summaries / enhanced memory
 
 ---
 
 ## Technical Architecture
 
-### Audio Pipeline
+### Voice Server
 ```
-[Mic] → VAD (Silero, on-device) → PCM/WAV → WebSocket → Server
-Server: Whisper STT → OpenClaw LLM (SSE) → Edge-TTS → WebSocket
-WebSocket → [Speaker] + transcription in UI
+Client (Android/Web) ←→ Voice Server (Node.js :3200/:3443) ←→ OpenClaw Gateway (:18789)
+                              ↕                                        ↕
+                        Whisper ASR (:9000)                       LLM (Claude, etc.)
+                        Speaker ID (:3201)
+                        TTS (Kokoro :5004 / XTTS :5002 / Edge cloud)
 ```
 
-### Stack
-- **Android**: Kotlin, Lottie for animations, OkHttp WebSocket
-- **Server**: Node.js, WebSocket bidirectional
-- **STT**: Whisper ASR (container)
-- **LLM**: OpenClaw gateway (chat/completions with SSE streaming)
-- **TTS**: Edge-TTS (server-side, Microsoft neural voices)
-- **VAD**: Silero VAD (Android on-device) — planned
+### Meet Bot
+```
+Google Meet (browser) ←→ Puppeteer + Chromium (Xvfb :99)
+                              ↕
+                        PulseAudio virtual devices
+                        parec (capture) → Whisper → AI Responder → TTS → paplay (inject)
+                              ↕
+                        OpenClaw Gateway (WS protocol v3)
+                        Live2D canvas → getUserMedia override → WebRTC video track
+                        Calendar Sync (ICS feed → setTimeout timers)
+```
 
 ---
 
-## Implementation Phases
+## Performance Benchmarks
 
-### Phase 1 — Foundation (v0.2) ✅ COMPLETE
-1. Rename app to OpenClaw Companion
-2. Fixed vertical orientation
-3. Bot name field in settings
-4. Push-to-talk with headphones (hold to record)
-5. Improved sound feedback
-6. Basic UI redesign (dark background, clean layout)
-
-### Phase 2 — Avatars & Animations (v0.3) ✅ COMPLETE
-1. Integrate Lottie
-2. Implement pulsing orb (first avatar)
-3. Animated states (idle/listening/thinking/speaking)
-4. Avatar selector in settings (orb, then more)
-
-### Phase 3 — VAD & Modes (v0.4) — PLANNED
-1. Integrate Silero VAD on Android
-2. Tap-to-talk mode with end-of-speech detection
-3. Mode switch in settings
-4. Continuous conversation mode
-
-### Phase 4 — Streaming & Interruptions (v0.5) ✅ COMPLETE
-1. SSE streaming from OpenClaw gateway
-2. Sentence-by-sentence TTS generation
-3. Parallel TTS + streaming to client
-4. Reduced latency (2-4s improvement)
-
-### Phase 5 — Android Integration (v0.6) — PLANNED
-1. Register as Assist app
-2. 1x1 Widget
-3. Conversation history
-
-### Phase 6 — Additional Avatars (v0.7) ✅ COMPLETE
-1. Cute mascot avatar
-2. Intelligent eye avatar
-3. Custom sound design
-
-### Phase 7 — Polish (v0.8) — PLANNED
-- [ ] Headphones: toggle mode (one click to record, another to send)
-- [ ] Polish skin colors
-- [ ] Cute avatar: more expression when thinking
-- [ ] Cute avatar: more expressive mouth when speaking (synced with audio)
-- [ ] Swipe to cancel: adjust sensitivity
-
-### Phase 8 — Live2D VTuber (v0.9) — PLANNED
-- [ ] Integrate Live2D Cubism SDK (free for open source/individuals)
-- [ ] Default model included in app
-- [ ] Import custom `.moc3` models
-- [ ] MotionSync — mouth sync with audio
-- [ ] Model states: idle (blinking), listening (attentive), thinking, speaking
-- [ ] Model selector in settings
-
----
-
-## Nice-to-have (post-MVP)
-- Wake word ("Hey [name]") with Picovoice
-- Whisper mode (speak softly → respond softly)
-- Brief mode (short responses)
-- Quick Settings Tile
-- Floating bubble (overlay)
-- Share sheet integration
-- Multimodal (send photos)
-- Additional skins/themes
-- Export conversations
-
----
-
-## Notes
-- Unified Telegram session works via `x-openclaw-session-key` header
-- Server runs in Docker
-- APK builds via Docker (no Android Studio required)
-- SSE streaming + sentence chunking + parallel TTS is implemented and working
-
-## Performance Benchmarks (2026-02-09)
-- Whisper transcription: ~400ms
-- LLM response (via OpenClaw): ~1-3s
-- Edge-TTS generation: ~2s for typical response
-- With streaming: first audio chunk arrives 2-4s sooner than non-streaming
+| Component | Latency | Notes |
+|-----------|---------|-------|
+| Whisper ASR | ~470ms | large-v3-turbo, RTX 3090 |
+| Kokoro TTS | ~460ms | GPU, bilingual EN/ES |
+| Edge TTS | ~2300ms | Cloud fallback |
+| XTTS v2 | ~1000ms first chunk | GPU, streaming, voice cloning |
+| LLM (Claude) | ~1-3s | Via OpenClaw Gateway |
+| Full pipeline | ~3-5s | Voice → text → AI → audio |

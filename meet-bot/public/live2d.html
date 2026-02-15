@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live2D Camera</title>
+  <style>
+    * { margin: 0; padding: 0; }
+    body { background: #1a1a2e; overflow: hidden; }
+    #live2d-canvas { width: 640px; height: 480px; }
+  </style>
+</head>
+<body>
+  <canvas id="live2d-canvas" width="640" height="480"></canvas>
+
+  <script src="/live2d/live2dcubismcore.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.3/dist/pixi.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+
+  <script>
+    const PIXI_L2D = PIXI.live2d;
+
+    let app, model;
+    let lipSyncValue = 0;
+    let targetLipSync = 0;
+
+    async function init() {
+      const canvas = document.getElementById('live2d-canvas');
+
+      app = new PIXI.Application({
+        view: canvas,
+        width: 640,
+        height: 480,
+        backgroundColor: 0x1a1a2e,
+        autoStart: true,
+        antialias: true,
+      });
+
+      // Get model name from URL params or default to Mao
+      const params = new URLSearchParams(window.location.search);
+      const modelName = params.get('model') || 'Mao';
+
+      try {
+        model = await PIXI_L2D.Live2DModel.from(
+          `/live2d/${modelName}/${modelName}.model3.json`,
+          { autoInteract: false }
+        );
+
+        // Scale and position
+        const scale = Math.min(480 / model.height, 640 / model.width) * 1.8;
+        model.scale.set(scale);
+        model.anchor.set(0.5, 0.5);
+        model.x = 320;
+        model.y = 300;
+
+        app.stage.addChild(model);
+
+        // Start idle motion
+        model.motion('Idle', 0, PIXI_L2D.MotionPriority.IDLE);
+
+        // Lip sync ticker
+        app.ticker.add(() => {
+          if (model?.internalModel) {
+            // Smooth lip sync
+            lipSyncValue += (targetLipSync - lipSyncValue) * 0.3;
+            const coreModel = model.internalModel.coreModel;
+            const paramIndex = coreModel.getParameterIndex('ParamA');
+            if (paramIndex >= 0) {
+              coreModel.setParameterValueByIndex(paramIndex, lipSyncValue);
+            }
+          }
+        });
+
+        console.log('[Live2D] Model loaded:', modelName);
+
+        // Expose stream for capture
+        window._live2dStream = canvas.captureStream(30);
+        window._live2dReady = true;
+
+      } catch (err) {
+        console.error('[Live2D] Failed to load model:', err);
+      }
+    }
+
+    // Control API exposed to Puppeteer
+    window.setLipSync = (value) => { targetLipSync = Math.max(0, Math.min(1, value)); };
+    window.setExpression = (name) => { if (model) model.expression(name); };
+    window.playMotion = (group, index) => { if (model) model.motion(group, index); };
+    window.isLive2DReady = () => !!window._live2dReady;
+
+    init();
+  </script>
+</body>
+</html>

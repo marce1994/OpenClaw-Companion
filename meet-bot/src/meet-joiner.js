@@ -80,28 +80,36 @@ class MeetJoiner extends EventEmitter {
   async _launchBrowser() {
     console.log(LOG, 'Launching Chromium...');
 
+    const args = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--use-file-for-fake-audio-capture=/tmp/silence.wav',
+      '--autoplay-policy=no-user-gesture-required',
+      '--window-size=1280,720',
+      '--disable-features=WebRtcHideLocalIpsWithMdns',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-translate',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+    ];
+
+    // If Live2D is enabled, don't use fake video — we'll provide our own
+    if (config.live2dEnabled) {
+      // Remove fake video capture since we'll override getUserMedia
+      // Keep fake audio capture for the virtual mic
+    }
+
     this.browser = await puppeteer.launch({
       executablePath: config.chromePath,
       headless: false, // Need real browser for WebRTC
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-gpu',
-        '--use-fake-ui-for-media-stream',
-        '--use-fake-device-for-media-stream',
-        '--use-file-for-fake-audio-capture=/tmp/silence.wav',
-        '--autoplay-policy=no-user-gesture-required',
-        '--window-size=1280,720',
-        '--disable-features=WebRtcHideLocalIpsWithMdns',
-        '--disable-dev-shm-usage',
-        '--disable-extensions',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-translate',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-      ],
+      args,
       defaultViewport: { width: 1280, height: 720 },
       ignoreDefaultArgs: ['--mute-audio'],
     });
@@ -153,6 +161,38 @@ class MeetJoiner extends EventEmitter {
     console.log(LOG, `Navigating to ${this.meetLink}...`);
     this._setState('joining');
 
+    // If Live2D is enabled, inject getUserMedia override before page loads
+    if (config.live2dEnabled) {
+      await this.page.evaluateOnNewDocument(() => {
+        // Override getUserMedia to intercept video track replacement later
+        const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices._origGetUserMedia = origGUM;
+        navigator.mediaDevices.getUserMedia = async function(constraints) {
+          const stream = await origGUM(constraints);
+          // Store for later Live2D track replacement
+          if (constraints?.video) {
+            window._meetVideoStream = stream;
+            window._meetVideoTrack = stream.getVideoTracks()[0];
+            console.log('[Live2D] Captured Meet video stream for later replacement');
+          }
+          return stream;
+        };
+
+        // Also intercept addTrack on RTCPeerConnection for live replacement
+        const origAddTrack = RTCPeerConnection.prototype.addTrack;
+        window._rtcSenders = [];
+        RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
+          const sender = origAddTrack.call(this, track, ...streams);
+          if (track.kind === 'video') {
+            window._rtcSenders.push(sender);
+            console.log('[Live2D] Captured RTC video sender for replacement');
+          }
+          return sender;
+        };
+      });
+      console.log(LOG, 'Injected getUserMedia override for Live2D');
+    }
+
     await this.page.goto(this.meetLink, {
       waitUntil: 'networkidle2',
       timeout: 30000,
@@ -163,9 +203,14 @@ class MeetJoiner extends EventEmitter {
   }
 
   async _joinMeeting() {
-    // Turn off camera if toggle is available
-    await this._tryClick('[aria-label*="camera" i][data-is-muted="false"]', 'Turn off camera');
-    await this._tryClick('[aria-label*="cámara" i][data-is-muted="false"]', 'Turn off camera (es)');
+    // If Live2D is enabled, keep camera ON (getUserMedia is overridden)
+    // If not, turn off camera
+    if (!config.live2dEnabled) {
+      await this._tryClick('[aria-label*="camera" i][data-is-muted="false"]', 'Turn off camera');
+      await this._tryClick('[aria-label*="cámara" i][data-is-muted="false"]', 'Turn off camera (es)');
+    } else {
+      console.log(LOG, 'Keeping camera ON for Live2D avatar');
+    }
 
     // Turn off mic — we'll inject audio via PulseAudio
     // Actually keep mic ON so our virtual mic (TTS) is used
