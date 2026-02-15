@@ -89,13 +89,14 @@ class Live2DView @JvmOverloads constructor(
             val model = lAppModel ?: return@queueEvent
             val stateName = when (state) {
                 OrbView.State.IDLE -> "idle"
+                OrbView.State.AMBIENT -> "idle"
                 OrbView.State.LISTENING -> "listening"
                 OrbView.State.THINKING -> "thinking"
                 OrbView.State.SPEAKING -> "speaking"
                 OrbView.State.DISCONNECTED -> "disconnected"
             }
             model.onStateChanged(stateName)
-            if (state == OrbView.State.IDLE || state == OrbView.State.DISCONNECTED) {
+            if (state == OrbView.State.IDLE || state == OrbView.State.AMBIENT || state == OrbView.State.DISCONNECTED) {
                 model.lipSyncValue = 0f
             }
         }

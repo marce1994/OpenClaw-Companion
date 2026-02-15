@@ -288,6 +288,38 @@
         </LinearLayout>
     </FrameLayout>
 
+    <!-- Smart Listen subtitle overlay (floating transcription) -->
+    <TextView
+        android:id="@+id/smartListenSubtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="120dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:background="@drawable/subtitle_bg"
+        android:textColor="#EEFFFFFF"
+        android:textSize="15sp"
+        android:maxWidth="320dp"
+        android:gravity="center"
+        android:elevation="10dp"
+        android:visibility="gone" />
+
+    <!-- RMS debug indicator (top right, only in Smart Listen) -->
+    <TextView
+        android:id="@+id/rmsDebugText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="56dp"
+        android:layout_marginEnd="16dp"
+        android:textSize="10sp"
+        android:textColor="#44FFFFFF"
+        android:fontFamily="monospace"
+        android:visibility="gone" />
+
     <!-- Text input bar overlay (shared between orb and Live2D modes) -->
     <LinearLayout
         android:id="@+id/textInputBar"

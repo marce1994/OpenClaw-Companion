@@ -63,6 +63,7 @@
     <string name="mode_push_to_talk">Push to Talk</string>
     <string name="mode_smart_listen">Smart Listen</string>
     <string name="status_smart_listening">🧠 Listening…</string>
+    <string name="status_smart_ambient">🎙️ Ambient listening</string>
     <string name="status_smart_heard">Heard: %1$s</string>
     <string name="smart_mode_hint">Say "%1$s" to get a response</string>
 </resources>

@@ -17,7 +17,7 @@ class OrbView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    enum class State { IDLE, LISTENING, THINKING, SPEAKING, DISCONNECTED }
+    enum class State { IDLE, AMBIENT, LISTENING, THINKING, SPEAKING, DISCONNECTED }
 
     private var state = State.IDLE
     private var amplitude = 0f
@@ -33,6 +33,7 @@ class OrbView @JvmOverloads constructor(
     private val skinColors = mapOf(
         "Default" to mapOf(
             State.IDLE to intArrayOf(0xFF1565C0.toInt(), 0xFF42A5F5.toInt()),
+            State.AMBIENT to intArrayOf(0xFF0D47A1.toInt(), 0xFF2196F3.toInt()),
             State.LISTENING to intArrayOf(0xFFE53935.toInt(), 0xFFFF7043.toInt()),
             State.THINKING to intArrayOf(0xFFFFA000.toInt(), 0xFFFFD54F.toInt()),
             State.SPEAKING to intArrayOf(0xFF00897B.toInt(), 0xFF4DD0E1.toInt()),
@@ -40,6 +41,7 @@ class OrbView @JvmOverloads constructor(
         ),
         "Jarvis" to mapOf(
             State.IDLE to intArrayOf(0xFF0099BB.toInt(), 0xFF00DDFF.toInt()),
+            State.AMBIENT to intArrayOf(0xFF007799.toInt(), 0xFF00BBDD.toInt()),
             State.LISTENING to intArrayOf(0xFFCC5500.toInt(), 0xFFFF6600.toInt()),
             State.THINKING to intArrayOf(0xFFCCAA00.toInt(), 0xFFFFDD00.toInt()),
             State.SPEAKING to intArrayOf(0xFF0066CC.toInt(), 0xFF0088FF.toInt()),
@@ -47,6 +49,7 @@ class OrbView @JvmOverloads constructor(
         ),
         "Fuego" to mapOf(
             State.IDLE to intArrayOf(0xFFCC3300.toInt(), 0xFFFF4400.toInt()),
+            State.AMBIENT to intArrayOf(0xFF992200.toInt(), 0xFFCC3300.toInt()),
             State.LISTENING to intArrayOf(0xFFCC1100.toInt(), 0xFFFF3300.toInt()),
             State.THINKING to intArrayOf(0xFFCC8800.toInt(), 0xFFFFAA00.toInt()),
             State.SPEAKING to intArrayOf(0xFFDD5500.toInt(), 0xFFFF7700.toInt()),
@@ -54,6 +57,7 @@ class OrbView @JvmOverloads constructor(
         ),
         "Matrix" to mapOf(
             State.IDLE to intArrayOf(0xFF003311.toInt(), 0xFF006622.toInt()),
+            State.AMBIENT to intArrayOf(0xFF002208.toInt(), 0xFF004411.toInt()),
             State.LISTENING to intArrayOf(0xFF00BB00.toInt(), 0xFF00FF41.toInt()),
             State.THINKING to intArrayOf(0xFF55AA00.toInt(), 0xFF88FF00.toInt()),
             State.SPEAKING to intArrayOf(0xFF00CC33.toInt(), 0xFF33FF66.toInt()),
@@ -61,6 +65,7 @@ class OrbView @JvmOverloads constructor(
         ),
         "Cósmico" to mapOf(
             State.IDLE to intArrayOf(0xFF6600CC.toInt(), 0xFF9933FF.toInt()),
+            State.AMBIENT to intArrayOf(0xFF4400AA.toInt(), 0xFF7722DD.toInt()),
             State.LISTENING to intArrayOf(0xFFCC00CC.toInt(), 0xFFFF33FF.toInt()),
             State.THINKING to intArrayOf(0xFFDD3388.toInt(), 0xFFFF66AA.toInt()),
             State.SPEAKING to intArrayOf(0xFF5500AA.toInt(), 0xFF7733DD.toInt()),
@@ -108,7 +113,7 @@ class OrbView @JvmOverloads constructor(
             if (currentSkin == "Cute") {
                 val now = System.currentTimeMillis()
                 // Blink
-                if (state == State.IDLE && !isBlinking && now - lastBlinkTime > 3000 + (Math.random() * 1000).toLong()) {
+                if ((state == State.IDLE || state == State.AMBIENT) && !isBlinking && now - lastBlinkTime > 3000 + (Math.random() * 1000).toLong()) {
                     isBlinking = true
                     lastBlinkTime = now
                     blinkPhase = 0f
@@ -118,7 +123,7 @@ class OrbView @JvmOverloads constructor(
                     if (blinkPhase > 1f) { isBlinking = false; blinkPhase = 0f }
                 }
                 // Random look direction (idle)
-                if (state == State.IDLE && now - lastLookChange > 2000 + (Math.random() * 3000).toLong()) {
+                if ((state == State.IDLE || state == State.AMBIENT) && now - lastLookChange > 2000 + (Math.random() * 3000).toLong()) {
                     lookX = (Math.random().toFloat() - 0.5f) * 0.4f
                     lookY = (Math.random().toFloat() - 0.5f) * 0.3f
                     lastLookChange = now
@@ -140,6 +145,7 @@ class OrbView @JvmOverloads constructor(
         emotionResetRunnable?.let { emotionHandler.removeCallbacks(it) }
         animator.duration = when (state) {
             State.IDLE -> 3000
+            State.AMBIENT -> 4000
             State.LISTENING -> 1500
             State.THINKING -> 600
             State.SPEAKING -> 2000
@@ -186,6 +192,7 @@ class OrbView @JvmOverloads constructor(
 
         val breathe = when (state) {
             State.IDLE -> 0.05f * sin(phase).toFloat()
+            State.AMBIENT -> 0.08f * sin(phase).toFloat() + 0.03f * sin(phase * 2.5).toFloat()
             State.LISTENING -> 0.15f * amplitude + 0.05f * sin(phase).toFloat()
             State.THINKING -> 0.10f * sin(phase * 3).toFloat() + 0.04f * sin(phase * 7).toFloat()
             State.SPEAKING -> 0.12f * amplitude + 0.04f * sin(phase).toFloat()
@@ -209,6 +216,21 @@ class OrbView @JvmOverloads constructor(
         hlPaint.shader = RadialGradient(cx - radius * 0.2f, cy - radius * 0.2f, radius * 0.6f,
             Color.argb(60, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
         canvas.drawCircle(cx - radius * 0.2f, cy - radius * 0.2f, radius * 0.6f, hlPaint)
+
+        // Pulsing ring for AMBIENT state (smart listening)
+        if (state == State.AMBIENT) {
+            val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 2f
+                val pulseAlpha = (40 + 30 * sin(phase * 1.5)).toInt().coerceIn(10, 70)
+                color = Color.argb(pulseAlpha, Color.red(c[1]), Color.green(c[1]), Color.blue(c[1]))
+            }
+            val ringRadius = radius * (1.2f + 0.15f * sin(phase).toFloat())
+            canvas.drawCircle(cx, cy, ringRadius, ringPaint)
+            val ringRadius2 = radius * (1.35f + 0.1f * sin(phase + 2f).toFloat())
+            ringPaint.alpha = (20 + 15 * sin(phase * 1.2)).toInt().coerceIn(5, 40)
+            canvas.drawCircle(cx, cy, ringRadius2, ringPaint)
+        }
 
         // Orbiting dots during THINKING state
         if (state == State.THINKING) {
@@ -277,13 +299,13 @@ class OrbView @JvmOverloads constructor(
             currentEmotion == "thinking" -> eyeRadius * 0.3f
             currentEmotion == "confused" -> eyeRadius * 0.35f
             state == State.THINKING -> eyeRadius * 0.3f
-            state == State.IDLE -> lookX * eyeRadius
+            state == State.IDLE || state == State.AMBIENT -> lookX * eyeRadius
             else -> 0f
         }
         val pOffY = when {
             currentEmotion == "thinking" -> -eyeRadius * 0.3f
             state == State.THINKING -> -eyeRadius * 0.3f
-            state == State.IDLE -> lookY * eyeRadius
+            state == State.IDLE || state == State.AMBIENT -> lookY * eyeRadius
             else -> 0f
         }
 
@@ -339,7 +361,7 @@ class OrbView @JvmOverloads constructor(
         drawEyebrows(canvas, cx, eyeY, eyeSpacing, eyeRadius, faceRadius)
 
         // --- Blush / Cheeks ---
-        val showBlush = state == State.IDLE || state == State.SPEAKING ||
+        val showBlush = state == State.IDLE || state == State.AMBIENT || state == State.SPEAKING ||
             currentEmotion == "happy" || currentEmotion == "laughing" || currentEmotion == "love"
         if (showBlush) {
             val blushAlpha = if (currentEmotion == "laughing" || currentEmotion == "love") 0x60 else 0x40

@@ -118,6 +118,21 @@ class MainActivity : Activity() {
     private lateinit var spinnerListenMode: Spinner
     private val listenModeOptions = arrayOf("Push to Talk", "Smart Listen")
 
+    // Smart Listen improvements
+    private lateinit var smartListenSubtitle: TextView
+    private lateinit var rmsDebugText: TextView
+    private var pendingSmartSegment: ByteArrayOutputStream? = null
+    private var smartSegmentTimer: Runnable? = null
+    private val SMART_SEGMENT_ACCUMULATE_MS = 2000L // Accumulate segments within 2s
+    private var smartListenSubtitleRunnable: Runnable? = null
+    private var pendingSmartListenMessageId: String? = null
+    private var lastSmartTranscriptMsgId: String? = null
+    private var smartFadeRunnable: Runnable? = null
+    private var subtitleHideRunnable: Runnable? = null
+    private var lastRmsUpdateMs = 0L
+    private var smartListenNoAudioStart = 0L // For audio source fallback
+    private var usingFallbackAudioSource = false
+
     companion object {
         const val PICK_IMAGE_REQUEST = 100
         const val PICK_FILE_REQUEST = 101
@@ -299,6 +314,8 @@ class MainActivity : Activity() {
         txtSwipeCancelL2d = findViewById(R.id.txtSwipeCancelL2d)
 
         // Shared views
+        smartListenSubtitle = findViewById(R.id.smartListenSubtitle)
+        rmsDebugText = findViewById(R.id.rmsDebugText)
         connectionDot = findViewById(R.id.connectionDot)
         edtServer = findViewById(R.id.edtServer)
         edtToken = findViewById(R.id.edtToken)
@@ -701,9 +718,9 @@ class MainActivity : Activity() {
         currentUiState = "idle"
 
         handler.post {
-            setActiveState(OrbView.State.IDLE)
+            setActiveState(idleState())
             if (listenMode == "smart_listen" && isConnected) {
-                setStatusText(getString(R.string.status_smart_listening))
+                setStatusText(getString(R.string.status_smart_ambient))
             } else {
                 setStatusText(getString(R.string.status_connected))
             }
@@ -733,7 +750,7 @@ class MainActivity : Activity() {
 
         handler.post {
             setStatusText(getString(R.string.status_connected))
-            setActiveState(OrbView.State.IDLE)
+            setActiveState(idleState())
             updateCancelButtonVisibility()
         }
     }
@@ -755,7 +772,7 @@ class MainActivity : Activity() {
             txtSwipeCancel.visibility = View.GONE
             txtSwipeCancelL2d.visibility = View.GONE
             setStatusText(getString(R.string.status_connected))
-            setActiveState(OrbView.State.IDLE)
+            setActiveState(idleState())
             updateCancelButtonVisibility()
             vibrate(30)
             Toast.makeText(this, getString(R.string.toast_cancelled), Toast.LENGTH_SHORT).show()
@@ -1064,16 +1081,19 @@ class MainActivity : Activity() {
             != PackageManager.PERMISSION_GRANTED) return
 
         isSmartListening = true
+        usingFallbackAudioSource = false
+        smartListenNoAudioStart = 0L
 
         // Enable full communication audio mode for hardware echo cancellation
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         handler.post {
-            setStatusText(getString(R.string.status_smart_listening))
-            setActiveState(OrbView.State.IDLE)
+            setStatusText(getString(R.string.status_smart_ambient))
+            setActiveState(OrbView.State.AMBIENT)
             // Hide mic button in smart mode, show indicator
             getActiveTalkBtn().alpha = 0.3f
+            rmsDebugText.visibility = View.VISIBLE
         }
 
         // Send bot name to server
@@ -1082,12 +1102,18 @@ class MainActivity : Activity() {
 
         smartRecordThread = Thread {
             val bufSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-            try {
-                smartAudioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, sampleRate, channelConfig, audioFormat, bufSize * 2
-                )
-            } catch (e: SecurityException) {
-                handler.post { Toast.makeText(this, "Mic permission needed", Toast.LENGTH_SHORT).show() }
+
+            fun createAudioRecord(source: Int): AudioRecord? {
+                return try {
+                    AudioRecord(source, sampleRate, channelConfig, audioFormat, bufSize * 2)
+                } catch (e: SecurityException) {
+                    handler.post { Toast.makeText(this, "Mic permission needed", Toast.LENGTH_SHORT).show() }
+                    null
+                }
+            }
+
+            smartAudioRecord = createAudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            if (smartAudioRecord == null) {
                 isSmartListening = false
                 return@Thread
             }
@@ -1128,13 +1154,35 @@ class MainActivity : Activity() {
                 }
                 val rms = Math.sqrt(sum.toDouble() / (read / 2)).toFloat()
 
+                // RMS debug indicator (throttled to every 200ms)
+                val now = System.currentTimeMillis()
+                if (now - lastRmsUpdateMs > 200) {
+                    lastRmsUpdateMs = now
+                    val rmsInt = rms.toInt()
+                    handler.post { rmsDebugText.text = "RMS: $rmsInt" }
+                }
+
+                // Audio source fallback: if RMS stays near 0 for 10s, switch to MIC
+                if (!usingFallbackAudioSource && rms < 5f) {
+                    if (smartListenNoAudioStart == 0L) smartListenNoAudioStart = now
+                    else if (now - smartListenNoAudioStart > 10000) {
+                        Log.w("SmartListen", "No audio for 10s, falling back to MIC source")
+                        usingFallbackAudioSource = true
+                        smartAudioRecord?.stop()
+                        smartAudioRecord?.release()
+                        smartAudioRecord = createAudioRecord(MediaRecorder.AudioSource.MIC)
+                        smartAudioRecord?.startRecording()
+                        handler.post { rmsDebugText.text = "RMS: 0 (MIC fallback)" }
+                        continue
+                    }
+                } else if (rms >= 5f) {
+                    smartListenNoAudioStart = 0L
+                }
+
                 // Barge-in: if AI is playing and user speaks LOUDLY, interrupt
-                // Uses higher threshold to avoid picking up speaker echo
                 if (smartPaused && rms > BARGEIN_THRESHOLD_RMS) {
                     Log.d("SmartListen", "Barge-in triggered: rms=$rms")
                     handler.post { bargeIn() }
-                    // smartPaused is now false (set by bargeIn/stopAllPlayback)
-                    // Fall through to normal speech detection
                 }
 
                 // Skip processing while AI is responding
@@ -1142,11 +1190,6 @@ class MainActivity : Activity() {
                     isSpeech = false
                     speechBuffer = ByteArrayOutputStream()
                     continue
-                }
-
-                // Debug: show RMS in status every ~1s
-                if (System.currentTimeMillis() % 1000 < 50) {
-                    Log.d("SmartListen", "RMS: $rms paused=$smartPaused speech=$isSpeech connected=$isConnected")
                 }
 
                 if (rms > SILENCE_THRESHOLD_RMS) {
@@ -1171,37 +1214,36 @@ class MainActivity : Activity() {
                     // Max segment length
                     if (System.currentTimeMillis() - speechStart > MAX_SEGMENT_MS) {
                         if (isEnrolling) handleEnrollmentAudio(speechBuffer.toByteArray())
-                        else sendSmartSegment(speechBuffer.toByteArray())
+                        else queueSmartSegment(speechBuffer.toByteArray())
                         isSpeech = false
                         speechBuffer = ByteArrayOutputStream()
                         handler.post {
-                            setActiveState(OrbView.State.IDLE)
-                            setStatusText(getString(R.string.status_smart_listening))
+                            setActiveState(OrbView.State.AMBIENT)
+                            setStatusText(getString(R.string.status_smart_ambient))
                         }
                     }
                 } else {
                     // Silence
                     if (isSpeech) {
-                        speechBuffer.write(buffer, 0, read) // Include trailing silence
+                        speechBuffer.write(buffer, 0, read)
                         if (silenceStart == 0L) {
                             silenceStart = System.currentTimeMillis()
                         } else if (System.currentTimeMillis() - silenceStart > SILENCE_DURATION_MS) {
-                            // End of speech segment
                             val duration = System.currentTimeMillis() - speechStart
                             if (duration >= MIN_SPEECH_DURATION_MS) {
                                 if (isEnrolling) {
                                     handleEnrollmentAudio(speechBuffer.toByteArray())
                                 } else {
-                                    sendSmartSegment(speechBuffer.toByteArray())
+                                    queueSmartSegment(speechBuffer.toByteArray())
                                 }
                             }
                             isSpeech = false
                             speechBuffer = ByteArrayOutputStream()
                             handler.post {
-                                setActiveState(OrbView.State.IDLE)
+                                setActiveState(OrbView.State.AMBIENT)
                                 setActiveAmplitude(0f)
                                 if (currentUiState != "thinking" && currentUiState != "speaking") {
-                                    setStatusText(getString(R.string.status_smart_listening))
+                                    setStatusText(getString(R.string.status_smart_ambient))
                                 }
                             }
                         }
@@ -1216,15 +1258,46 @@ class MainActivity : Activity() {
         smartRecordThread?.start()
     }
 
+    // Accumulate speech segments within 2s window before sending
+    private fun queueSmartSegment(pcmData: ByteArray) {
+        handler.post {
+            smartSegmentTimer?.let { handler.removeCallbacks(it) }
+
+            if (pendingSmartSegment == null) {
+                pendingSmartSegment = ByteArrayOutputStream()
+            }
+            pendingSmartSegment!!.write(pcmData)
+
+            smartSegmentTimer = Runnable {
+                val accumulated = pendingSmartSegment?.toByteArray()
+                pendingSmartSegment = null
+                if (accumulated != null && accumulated.size > 1000) {
+                    sendSmartSegment(accumulated)
+                }
+            }
+            handler.postDelayed(smartSegmentTimer!!, SMART_SEGMENT_ACCUMULATE_MS)
+        }
+    }
+
     private fun stopSmartListening() {
         isSmartListening = false
         smartRecordThread?.interrupt()
         smartRecordThread = null
+        // Flush pending segment
+        smartSegmentTimer?.let { handler.removeCallbacks(it) }
+        val accumulated = pendingSmartSegment?.toByteArray()
+        pendingSmartSegment = null
+        if (accumulated != null && accumulated.size > 1000) {
+            sendSmartSegment(accumulated)
+        }
         // Restore normal audio mode
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_NORMAL
         handler.post {
             getActiveTalkBtn().alpha = 1.0f
+            rmsDebugText.visibility = View.GONE
+            smartListenSubtitle.visibility = View.GONE
+            subtitleHideRunnable?.let { handler.removeCallbacks(it) }
             if (isConnected) {
                 setStatusText(getString(R.string.status_connected))
             }
@@ -1243,6 +1316,56 @@ class MainActivity : Activity() {
         handler.post {
             setActiveState(OrbView.State.THINKING)
             setStatusText(getString(R.string.status_transcribing))
+        }
+    }
+
+    // Return the appropriate "idle" state — AMBIENT if smart listening, IDLE otherwise
+    private fun idleState(): OrbView.State {
+        return if (isSmartListening) OrbView.State.AMBIENT else OrbView.State.IDLE
+    }
+
+    // --- Smart Listen UI helpers ---
+
+    private fun showSmartSubtitle(text: String) {
+        subtitleHideRunnable?.let { handler.removeCallbacks(it) }
+        smartListenSubtitle.text = text
+        smartListenSubtitle.alpha = 1f
+        smartListenSubtitle.visibility = View.VISIBLE
+        subtitleHideRunnable = Runnable {
+            smartListenSubtitle.animate().alpha(0f).setDuration(500).withEndAction {
+                smartListenSubtitle.visibility = View.GONE
+            }.start()
+        }
+        handler.postDelayed(subtitleHideRunnable!!, 5000)
+    }
+
+    private fun hideSmartSubtitle() {
+        subtitleHideRunnable?.let { handler.removeCallbacks(it) }
+        smartListenSubtitle.visibility = View.GONE
+    }
+
+    private fun confirmSmartMessage() {
+        // Cancel fade timer — AI responded, keep the message
+        smartFadeRunnable?.let { handler.removeCallbacks(it) }
+        smartFadeRunnable = null
+        // Un-fade the message if it was already faded
+        lastSmartTranscriptMsgId?.let { msgId ->
+            val idx = chatMessages.indexOfFirst { it.id == msgId }
+            if (idx >= 0 && chatMessages[idx].isFaded) {
+                chatMessages[idx] = chatMessages[idx].copy(isFaded = false)
+                chatAdapter.notifyItemChanged(idx)
+                if (::chatAdapterL2d.isInitialized) chatAdapterL2d.notifyItemChanged(idx)
+            }
+        }
+        lastSmartTranscriptMsgId = null
+    }
+
+    private fun fadeSmartMessage(msgId: String) {
+        val idx = chatMessages.indexOfFirst { it.id == msgId }
+        if (idx >= 0) {
+            chatMessages[idx] = chatMessages[idx].copy(isFaded = true)
+            chatAdapter.notifyItemChanged(idx)
+            if (::chatAdapterL2d.isInitialized) chatAdapterL2d.notifyItemChanged(idx)
         }
     }
 
@@ -1337,7 +1460,7 @@ class MainActivity : Activity() {
                 handler.post {
                     setStatusText(getString(R.string.status_connected))
                     setConnectionStatus("connected")
-                    setActiveState(OrbView.State.IDLE)
+                    setActiveState(idleState())
                     updateCancelButtonVisibility()
                 }
                 startPing()
@@ -1386,7 +1509,20 @@ class MainActivity : Activity() {
                             val t = msg.optString("text", "")
                             handler.post {
                                 setTranscriptText(getString(R.string.transcript_you, t))
-                                addChatMessage(ChatMessage(role = "user", text = t))
+                                if (isSmartListening) {
+                                    // Show as floating subtitle, not chat bubble
+                                    showSmartSubtitle(t)
+                                    // Add faded chat message that confirms later
+                                    val smartMsg = ChatMessage(role = "user", text = t, isSmartListen = true)
+                                    addChatMessage(smartMsg)
+                                    lastSmartTranscriptMsgId = smartMsg.id
+                                    // Schedule fade if no response in 10s
+                                    smartFadeRunnable?.let { handler.removeCallbacks(it) }
+                                    smartFadeRunnable = Runnable { fadeSmartMessage(smartMsg.id) }
+                                    handler.postDelayed(smartFadeRunnable!!, 10000)
+                                } else {
+                                    addChatMessage(ChatMessage(role = "user", text = t))
+                                }
                             }
                         }
                         "reply" -> {
@@ -1394,7 +1530,9 @@ class MainActivity : Activity() {
                             val botName = getBotName()
                             handler.post {
                                 setReplyText(getString(R.string.transcript_bot, botName, t))
+                                confirmSmartMessage() // Cancel fade timer, confirm user msg
                                 addChatMessage(ChatMessage(role = "assistant", text = t, isStreaming = false))
+                                hideSmartSubtitle()
                             }
                         }
                         "buttons" -> {
@@ -1433,7 +1571,7 @@ class MainActivity : Activity() {
                                     currentUiState = "idle"
                                     handler.post {
                                         setStatusText(getString(R.string.status_connected))
-                                        setActiveState(OrbView.State.IDLE)
+                                        setActiveState(idleState())
                                         updateCancelButtonVisibility()
                                     }
                                 }
@@ -1478,7 +1616,7 @@ class MainActivity : Activity() {
                             smartPaused = false
                             handler.post {
                                 setStatusText(getString(R.string.status_error, m))
-                                setActiveState(OrbView.State.IDLE)
+                                setActiveState(idleState())
                                 updateCancelButtonVisibility()
                                 addChatMessage(ChatMessage(role = "assistant", text = "⚠️ $m", isStreaming = false))
                             }
@@ -1506,6 +1644,8 @@ class MainActivity : Activity() {
                                 accumulatedReplyText.clear()
                                 handler.post {
                                     setActiveState(OrbView.State.SPEAKING)
+                                    confirmSmartMessage()
+                                    hideSmartSubtitle()
                                 }
                             }
                             accumulatedReplyText.append(chunkText)
@@ -1546,7 +1686,7 @@ class MainActivity : Activity() {
                             if (!isPlayingChunks && audioChunkQueue.isEmpty()) {
                                 handler.post {
                                     currentUiState = "idle"
-                                    setActiveState(OrbView.State.IDLE)
+                                    setActiveState(idleState())
                                     setStatusText(getString(R.string.status_connected))
                                     updateCancelButtonVisibility()
                                 }
@@ -1588,8 +1728,8 @@ class MainActivity : Activity() {
                             val isOwner = msg.optBoolean("isOwner", false)
                             val icon = if (isOwner) "👑" else "🎧"
                             handler.post {
+                                showSmartSubtitle("[$speaker] $t")
                                 setStatusText(getString(R.string.status_smart_heard, "[$speaker] ${t.take(30)}"))
-                                addChatMessage(ChatMessage(role = "system", text = "$icon [$speaker]: $t", emotion = "neutral"))
                             }
                         }
                         "smart_status" -> {
@@ -1598,8 +1738,8 @@ class MainActivity : Activity() {
                                 when (s) {
                                     "listening" -> {
                                         if (currentUiState != "speaking" && currentUiState != "thinking") {
-                                            setStatusText(getString(R.string.status_smart_listening))
-                                            setActiveState(OrbView.State.IDLE)
+                                            setStatusText(getString(R.string.status_smart_ambient))
+                                            setActiveState(OrbView.State.AMBIENT)
                                         }
                                     }
                                     "transcribing" -> {
@@ -1853,11 +1993,11 @@ class MainActivity : Activity() {
                     handler.post {
                         setActiveAmplitude(0f)
                         if (listenMode == "smart_listen" && isConnected) {
-                            setStatusText(getString(R.string.status_smart_listening))
+                            setStatusText(getString(R.string.status_smart_ambient))
                         } else {
                             setStatusText(getString(R.string.status_connected))
                         }
-                        setActiveState(OrbView.State.IDLE)
+                        setActiveState(idleState())
                         updateCancelButtonVisibility()
                     }
                 }
@@ -1871,7 +2011,7 @@ class MainActivity : Activity() {
             currentUiState = "idle"
             handler.post {
                 setStatusText(getString(R.string.status_error, e.message))
-                setActiveState(OrbView.State.IDLE)
+                setActiveState(idleState())
                 updateCancelButtonVisibility()
             }
         }
@@ -1925,9 +2065,9 @@ class MainActivity : Activity() {
                 smartPaused = false  // Resume smart listening
                 handler.post {
                     currentUiState = "idle"
-                    setActiveState(OrbView.State.IDLE)
+                    setActiveState(idleState())
                     if (listenMode == "smart_listen" && isConnected) {
-                        setStatusText(getString(R.string.status_smart_listening))
+                        setStatusText(getString(R.string.status_smart_ambient))
                     } else {
                         setStatusText(getString(R.string.status_connected))
                     }

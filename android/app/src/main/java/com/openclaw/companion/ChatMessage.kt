@@ -11,7 +11,9 @@ data class ChatMessage(
     val emotion: String = "neutral",
     val buttons: List<ChatButton>? = null,
     val artifact: ChatArtifact? = null,
-    var isStreaming: Boolean = false
+    var isStreaming: Boolean = false,
+    var isSmartListen: Boolean = false,
+    var isFaded: Boolean = false
 )
 
 data class ChatButton(val text: String, val value: String)

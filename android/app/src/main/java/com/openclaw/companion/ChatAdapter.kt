@@ -53,6 +53,8 @@ class ChatAdapter(
                 bubble?.setBackgroundResource(R.drawable.bubble_assistant_transparent)
             }
         }
+        // Fade out smart listen messages that got no response
+        holder.itemView.alpha = if (msg.isFaded) 0.3f else 1f
     }
 
     override fun getItemCount() = messages.size

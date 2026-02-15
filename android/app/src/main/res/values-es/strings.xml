@@ -57,6 +57,7 @@
     <string name="mode_push_to_talk">Apretar para hablar</string>
     <string name="mode_smart_listen">Escucha inteligente</string>
     <string name="status_smart_listening">🧠 Escuchando…</string>
+    <string name="status_smart_ambient">🎙️ Escucha ambiente</string>
     <string name="status_smart_heard">Escuché: %1$s</string>
     <string name="smart_mode_hint">Decí "%1$s" para que responda</string>
 </resources>
