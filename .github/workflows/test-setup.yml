@@ -224,7 +224,7 @@ jobs:
       - name: Test join validation
         run: |
           # Should return 400 for missing meetLink
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3300/join -H 'Content-Type: application/json' -d '{}')
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3300/join -H 'Content-Type: application/json' -d '{}')
           if [ "$STATUS" = "400" ]; then
             echo "✅ Join validation works (400 for missing meetLink)"
           else
