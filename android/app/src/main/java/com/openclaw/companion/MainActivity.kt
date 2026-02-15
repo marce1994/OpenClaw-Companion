@@ -125,7 +125,6 @@ class MainActivity : Activity() {
     private var smartSegmentTimer: Runnable? = null
     private val SMART_SEGMENT_ACCUMULATE_MS = 2000L // Accumulate segments within 2s
     private var smartListenSubtitleRunnable: Runnable? = null
-    private var pendingSmartListenMessageId: String? = null
     private var lastSmartTranscriptMsgId: String? = null
     private var smartFadeRunnable: Runnable? = null
     private var subtitleHideRunnable: Runnable? = null
