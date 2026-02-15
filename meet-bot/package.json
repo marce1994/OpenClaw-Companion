@@ -1,0 +1,16 @@
+{
+  "name": "meet-bot",
+  "version": "1.0.0",
+  "description": "Google Meet AI bot that joins calls, transcribes, and responds via OpenClaw",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "ws": "^8.17.0"
+  }
+}
