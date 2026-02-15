@@ -10,6 +10,9 @@ on:
       - 'server/.env.example'
       - 'server/start.sh'
       - 'server/package.json'
+      - 'meet-bot/Dockerfile'
+      - 'meet-bot/src/**'
+      - 'meet-bot/package.json'
       - '.github/workflows/test-setup.yml'
 
 jobs:
@@ -139,8 +142,103 @@ jobs:
           echo "=== Whisper Logs ==="
           docker compose logs whisper --tail 15 2>&1 || true
 
-      - name: Cleanup
+      - name: Cleanup voice server
         if: always()
         run: |
           cd server
           docker compose down -v 2>/dev/null || true
+
+  test-meet-bot:
+    name: Test Meet Bot Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify meet-bot files exist
+        run: |
+          echo "=== Checking meet-bot files ==="
+          for f in meet-bot/Dockerfile meet-bot/package.json meet-bot/src/index.js meet-bot/src/config.js meet-bot/src/meet-joiner.js meet-bot/src/ai-responder.js meet-bot/src/audio-pipeline.js meet-bot/src/transcriber.js meet-bot/src/live2d-canvas.js meet-bot/src/calendar-sync.js meet-bot/src/meeting-memory.js meet-bot/scripts/entrypoint.sh; do
+            if [ -f "$f" ]; then echo "✅ $f"; else echo "❌ MISSING: $f"; exit 1; fi
+          done
+
+      - name: Verify Live2D assets
+        run: |
+          for model in Mao Hiyori Rice; do
+            if [ -f "meet-bot/public/live2d/$model/$model.model3.json" ]; then
+              echo "✅ Live2D model: $model"
+            else
+              echo "❌ Missing Live2D model: $model"
+              exit 1
+            fi
+          done
+          test -f meet-bot/public/live2d/live2dcubismcore.min.js && echo "✅ Cubism Core SDK"
+
+      - name: Build meet-bot image
+        run: |
+          cd meet-bot
+          docker build -t meet-bot:ci .
+          echo "✅ Meet bot image built"
+
+      - name: Start meet-bot (no external services)
+        run: |
+          docker run -d --name meet-bot-ci \
+            --network host \
+            -e GATEWAY_WS_URL=ws://127.0.0.1:18789 \
+            -e GATEWAY_TOKEN=ci-test-token \
+            -e WHISPER_URL=http://127.0.0.1:9000/asr \
+            -e TTS_ENGINE=edge \
+            -e BOT_NAME=TestBot \
+            -e LIVE2D_ENABLED=true \
+            -e LIVE2D_MODEL=Mao \
+            meet-bot:ci
+          echo "✅ Meet bot container started"
+
+      - name: Wait for meet-bot HTTP API
+        run: |
+          echo "Waiting for meet-bot..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3300/health > /dev/null 2>&1; then
+              echo "✅ Meet bot is healthy (${i}s)"
+              break
+            fi
+            if [ "$i" = "30" ]; then echo "❌ Meet bot timeout"; exit 1; fi
+            sleep 2
+          done
+
+      - name: Test meet-bot API endpoints
+        run: |
+          echo "=== Health ==="
+          curl -sf http://127.0.0.1:3300/health | jq .
+          echo ""
+          echo "=== Status ==="
+          curl -sf http://127.0.0.1:3300/status | jq .
+          echo ""
+          echo "=== Static files (Live2D) ==="
+          curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:3300/live2d.html
+          echo " live2d.html"
+          curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:3300/live2d/Mao/Mao.model3.json
+          echo " Mao.model3.json"
+          echo "✅ All endpoints responding"
+
+      - name: Test join validation
+        run: |
+          # Should return 400 for missing meetLink
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3300/join -H 'Content-Type: application/json' -d '{}')
+          if [ "$STATUS" = "400" ]; then
+            echo "✅ Join validation works (400 for missing meetLink)"
+          else
+            echo "❌ Expected 400, got $STATUS"
+            exit 1
+          fi
+
+      - name: Show meet-bot logs
+        if: always()
+        run: |
+          echo "=== Meet Bot Logs ==="
+          docker logs meet-bot-ci 2>&1 | tail -30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f meet-bot-ci 2>/dev/null || true
