@@ -41,6 +41,12 @@ class MeetJoiner extends EventEmitter {
     try {
       await this._launchBrowser();
       await this._loadCookies();
+
+      // Emit 'browser-ready' so Live2D can install overrides before navigation
+      this.emit('browser-ready', this.page);
+      // Give a tick for async listeners
+      await new Promise(r => setTimeout(r, 100));
+
       await this._navigateToMeet();
       await this._joinMeeting();
       this._startWatchdog();
@@ -113,10 +119,51 @@ class MeetJoiner extends EventEmitter {
       headless: false, // Need real browser for WebRTC
       args,
       defaultViewport: { width: 1280, height: 720 },
-      ignoreDefaultArgs: ['--mute-audio'],
+      ignoreDefaultArgs: ['--mute-audio', '--enable-automation'],
     });
 
     this.page = (await this.browser.pages())[0] || await this.browser.newPage();
+
+    // Stealth patches — hide automation fingerprints
+    await this.page.evaluateOnNewDocument(() => {
+      // Hide webdriver
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      delete navigator.__proto__.webdriver;
+      
+      // Fake chrome.runtime (Google checks this on their own sites)
+      window.chrome = window.chrome || {};
+      window.chrome.runtime = window.chrome.runtime || {
+        connect: function() {},
+        sendMessage: function() {},
+      };
+      
+      // Fake plugins (headless has 0)
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const arr = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ];
+          arr.refresh = () => {};
+          return arr;
+        }
+      });
+      
+      // Fake languages
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      
+      // Fix permissions query
+      const origQuery = window.Permissions?.prototype?.query;
+      if (origQuery) {
+        window.Permissions.prototype.query = function(params) {
+          if (params.name === 'notifications') {
+            return Promise.resolve({ state: 'prompt', onchange: null });
+          }
+          return origQuery.call(this, params);
+        };
+      }
+    });
 
     // Grant permissions
     const context = this.browser.defaultBrowserContext();
@@ -124,7 +171,7 @@ class MeetJoiner extends EventEmitter {
       'microphone', 'camera', 'notifications',
     ]);
 
-    console.log(LOG, 'Browser launched');
+    console.log(LOG, 'Browser launched (stealth mode)');
   }
 
   async _loadCookies() {
@@ -163,55 +210,16 @@ class MeetJoiner extends EventEmitter {
     console.log(LOG, `Navigating to ${this.meetLink}...`);
     this._setState('joining');
 
-    // If Live2D is enabled, inject getUserMedia override before page loads
-    if (config.live2dEnabled) {
-      await this.page.evaluateOnNewDocument(() => {
-        // Override getUserMedia to intercept video track replacement later
-        const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        navigator.mediaDevices._origGetUserMedia = origGUM;
-        navigator.mediaDevices.getUserMedia = async function(constraints) {
-          const stream = await origGUM(constraints);
-          // Store for later Live2D track replacement
-          if (constraints?.video) {
-            window._meetVideoStream = stream;
-            window._meetVideoTrack = stream.getVideoTracks()[0];
-            console.log('[Live2D] Captured Meet video stream for later replacement');
-          }
-          return stream;
-        };
+    // Live2D overrides are installed externally via live2d.installOverrides(page)
+    // before this method is called. See index.js for the flow.
 
-        // Intercept RTCPeerConnection to capture senders and instances
-        window._rtcSenders = [];
-        window._meetPeerConnections = [];
-
-        const OrigRTCPC = window.RTCPeerConnection;
-        
-        // Proxy the constructor to capture instances
-        window.RTCPeerConnection = new Proxy(OrigRTCPC, {
-          construct(target, args) {
-            const pc = new target(...args);
-            window._meetPeerConnections.push(pc);
-            console.log('[Live2D] Captured RTCPeerConnection instance (' + window._meetPeerConnections.length + ')');
-            return pc;
-          }
-        });
-        // Keep prototype chain intact
-        window.RTCPeerConnection.prototype = OrigRTCPC.prototype;
-        Object.defineProperty(window.RTCPeerConnection, 'name', { value: 'RTCPeerConnection' });
-
-        // Also intercept addTrack to capture video senders
-        const origAddTrack = OrigRTCPC.prototype.addTrack;
-        OrigRTCPC.prototype.addTrack = function(track, ...streams) {
-          const sender = origAddTrack.call(this, track, ...streams);
-          if (track.kind === 'video') {
-            window._rtcSenders.push(sender);
-            console.log('[Live2D] Captured RTC video sender (' + window._rtcSenders.length + ')');
-          }
-          return sender;
-        };
-      });
-      console.log(LOG, 'Injected getUserMedia override for Live2D');
-    }
+    // Listen for console messages on Meet page for debugging
+    this.page.on('console', msg => {
+      const text = msg.text();
+      if (text.includes('Live2D') || text.includes('Override')) {
+        console.log('[MeetPage]', text);
+      }
+    });
 
     await this.page.goto(this.meetLink, {
       waitUntil: 'networkidle2',
@@ -219,6 +227,16 @@ class MeetJoiner extends EventEmitter {
     });
 
     await this._sleep(3000);
+    // Check if our override was injected
+    const overrideCheck = await this.page.evaluate(() => {
+      return {
+        hasFakeCanvas: !!window._fakeCanvas,
+        gumCallCount: window._gumCallCount || 0,
+        gumCalls: window._gumCalls || [],
+        hasPCs: (window._meetPeerConnections || []).length,
+      };
+    });
+    console.log(LOG, 'Override check:', JSON.stringify(overrideCheck));
     console.log(LOG, 'Page loaded');
   }
 
@@ -251,20 +269,92 @@ class MeetJoiner extends EventEmitter {
     // Wait for admission (if "Ask to join" was clicked)
     await this._waitForAdmission();
 
+    // Handle post-join dialogs (Gemini notes, tips, etc.)
+    await this._dismissDialogs();
+
     console.log(LOG, 'Successfully joined the meeting!');
     this._setState('in-meeting');
     this.emit('joined');
   }
 
+  async _dismissDialogs() {
+    // Handle Gemini "taking notes" dialog, "Got it" tips, etc.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await this._sleep(1000);
+      try {
+        const dismissed = await this.page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+          const dismissTexts = ['join now', 'got it', 'dismiss', 'close', 'ok', 'accept', 'entendido', 'cerrar', 'aceptar'];
+          let found = false;
+          for (const btn of buttons) {
+            const text = btn.textContent.toLowerCase().trim();
+            if (dismissTexts.some(t => text === t || text.includes(t))) {
+              // Don't click "Leave" button
+              if (text.includes('leave') || text.includes('salir')) continue;
+              btn.click();
+              found = true;
+              console.log('[MeetBot] Dismissed dialog button: ' + text);
+            }
+          }
+          return found;
+        });
+        if (dismissed) {
+          console.log(LOG, 'Dismissed a dialog (attempt ' + (attempt + 1) + ')');
+        } else {
+          break; // No more dialogs
+        }
+      } catch (e) { break; }
+    }
+  }
+
   async _trySetName() {
     try {
-      const nameInput = await this.page.$('input[placeholder*="name" i], input[placeholder*="nombre" i], input[aria-label*="name" i]');
-      if (nameInput) {
-        await nameInput.click({ clickCount: 3 }); // Select all
-        await nameInput.type(this.botName, { delay: 50 });
-        console.log(LOG, `Set name to "${this.botName}"`);
+      // Try multiple selectors — Meet changes these frequently
+      const selectors = [
+        'input[placeholder*="name" i]',
+        'input[placeholder*="nombre" i]',
+        'input[aria-label*="name" i]',
+        'input[aria-label*="nombre" i]',
+        'input[type="text"]',  // Generic fallback — usually only 1 text input on join screen
+      ];
+      
+      let nameInput = null;
+      for (const sel of selectors) {
+        nameInput = await this.page.$(sel);
+        if (nameInput) {
+          console.log(LOG, `Found name input with selector: ${sel}`);
+          break;
+        }
       }
-    } catch (e) { /* no name field, probably signed in */ }
+      
+      // Always try evaluate approach — more reliable than Puppeteer click
+      const found = await this.page.evaluate((name) => {
+        const inputs = document.querySelectorAll('input');
+        for (const input of inputs) {
+          const ph = (input.placeholder || '').toLowerCase();
+          const label = (input.getAttribute('aria-label') || '').toLowerCase();
+          if (ph.includes('name') || ph.includes('nombre') || ph.includes('your name') ||
+              label.includes('name') || label.includes('nombre') ||
+              input.type === 'text') {
+            // Use native setter to bypass React controlled input
+            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            nativeSetter.call(input, name);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'set: ' + (ph || label || input.type) + ' = ' + input.value;
+          }
+        }
+        return null;
+      }, this.botName);
+      
+      if (found) {
+        console.log(LOG, `Name: ${found}`);
+      } else {
+        console.log(LOG, 'No name input found — may already be signed in');
+      }
+    } catch (e) {
+      console.log(LOG, 'Name input error:', e.message);
+    }
   }
 
   async _clickJoinButton() {
@@ -326,34 +416,75 @@ class MeetJoiner extends EventEmitter {
     const start = Date.now();
 
     while (Date.now() - start < timeout) {
-      // Check if we're in the meeting (presence of meeting controls)
-      const inMeeting = await this.page.evaluate(() => {
-        // Meeting UI indicators
+      // Check if we're in the meeting AND handle any blocking dialogs
+      const status = await this.page.evaluate(() => {
+        const body = document.body.innerText.toLowerCase();
+        
+        // Check for denial
+        if (body.includes('denied') || body.includes('rechazad') ||
+            body.includes('not allowed') || body.includes('removed')) {
+          return 'denied';
+        }
+        
+        // Check for blocking dialogs (Gemini notes, etc.) and click through them
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+        // Only dismiss non-join dialogs (tips, notifications)
+        // The Gemini "Join now" dialog only appears AFTER admission — handle separately
+        const acceptTexts = ['got it', 'dismiss', 'entendido', 'aceptar'];
+        const skipTexts = ['leave', 'salir', 'cancel', 'cancelar', 'join', 'ask to join', 'unirse', 'pedir'];
+        
+        // Special case: Gemini dialog with "Join now" — only click if we see Gemini text
+        const bodyLower = document.body.innerText.toLowerCase();
+        const hasGemini = bodyLower.includes('gemini') && bodyLower.includes('taking notes');
+        if (hasGemini) {
+          for (const btn of buttons) {
+            const text = btn.textContent.toLowerCase().trim();
+            if (text === 'join now' || text === 'unirse ahora') {
+              btn.click();
+              console.log('[MeetBot] Clicked Gemini Join now dialog');
+              return 'clicked-dialog';
+            }
+          }
+        }
+        for (const btn of buttons) {
+          const text = btn.textContent.toLowerCase().trim();
+          if (skipTexts.some(t => text.includes(t))) continue;
+          if (acceptTexts.some(t => text === t || text.includes(t))) {
+            btn.click();
+            console.log('[MeetBot] Auto-clicked dialog: ' + text);
+            return 'clicked-dialog';
+          }
+        }
+        
+        // Check if we're in the meeting
         const controls = document.querySelector('[data-call-ended]');
-        if (controls) return false; // Call ended
-
-        // Check for participant list, chat, or meeting controls
+        if (controls) return 'ended';
+        
         const meetUI = document.querySelector(
           '[aria-label*="people" i], [aria-label*="participant" i], ' +
           '[aria-label*="chat" i], [data-tooltip*="chat" i], ' +
           '[aria-label*="personas" i]'
         );
-        return !!meetUI;
+        return meetUI ? 'in-meeting' : 'waiting';
       });
 
-      if (inMeeting) {
-        return;
+      if (status === 'in-meeting') return;
+      if (status === 'denied') throw new Error('Admission denied or removed from meeting');
+      if (status === 'ended') throw new Error('Meeting ended');
+      if (status === 'clicked-dialog') {
+        console.log(LOG, 'Clicked through a dialog during admission wait');
+        await this._sleep(3000); // Give time for meeting to load after dialog
+        continue;
       }
-
-      // Check if we got denied
-      const denied = await this.page.evaluate(() => {
-        const body = document.body.innerText.toLowerCase();
-        return body.includes('denied') || body.includes('rechazad') ||
-               body.includes('not allowed') || body.includes('removed');
-      });
-
-      if (denied) {
-        throw new Error('Admission denied or removed from meeting');
+      
+      // Log what we see every 10 seconds
+      if ((Date.now() - start) % 10000 < 2500) {
+        const pageInfo = await this.page.evaluate(() => ({
+          title: document.title,
+          url: window.location.href,
+          bodySnippet: document.body.innerText.substring(0, 200),
+        })).catch(() => ({ title: '?', url: '?', bodySnippet: '?' }));
+        console.log(LOG, 'Still waiting...', JSON.stringify(pageInfo));
       }
 
       await this._sleep(2000);
@@ -370,13 +501,18 @@ class MeetJoiner extends EventEmitter {
         // Check if meeting ended
         const ended = await this.page.evaluate(() => {
           const body = document.body.innerText.toLowerCase();
-          return body.includes('you left the meeting') ||
+          const title = document.title;
+          // Title changes from "Meeting - Google Meet" to just "Google Meet" when ejected
+          const titleEjected = title === 'Google Meet' || title === 'Meet';
+          return titleEjected ||
+                 body.includes('you left the meeting') ||
                  body.includes('the meeting has ended') ||
                  body.includes('has finalizado') ||
                  body.includes('saliste de la reunión') ||
                  body.includes('removed from the meeting') ||
                  body.includes('call ended') ||
-                 body.includes('return to home screen');
+                 body.includes('return to home screen') ||
+                 body.includes('you\'ve been removed');
         });
 
         if (ended) {

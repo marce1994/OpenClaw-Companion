@@ -24,7 +24,31 @@ const calendar = new CalendarSync();
 // --- Wire up events ---
 transcriber.on('transcript', (entry) => {
   memory.addEntry(entry);
+  // Show thinking while AI processes
+  if (config.live2dEnabled && live2d.active) {
+    live2d.setStatus('thinking');
+  }
   aiResponder.onTranscript(entry);
+});
+
+transcriber.on('voice-start', () => {
+  if (config.live2dEnabled && live2d.active) {
+    live2d.setStatus('listening');
+  }
+});
+
+transcriber.on('voice-end', () => {
+  if (config.live2dEnabled && live2d.active) {
+    live2d.setStatus('transcribing');
+  }
+});
+
+// Install Live2D overrides BEFORE Meet page navigates
+meetJoiner.on('browser-ready', async (page) => {
+  if (config.live2dEnabled) {
+    console.log(LOG, 'Installing Live2D WebCodecs overrides...');
+    await live2d.installOverrides(page);
+  }
 });
 
 meetJoiner.on('joined', async () => {
@@ -33,43 +57,32 @@ meetJoiner.on('joined', async () => {
   transcriber.start();
   aiResponder.connect();
 
-  // Inject Live2D avatar into Meet page
-  if (config.live2dEnabled && meetJoiner.page && meetJoiner.browser) {
-    await live2d.start(meetJoiner.browser);
+  // Inject Live2D renderer directly into Meet page (HD, 30fps+)
+  if (config.live2dEnabled && meetJoiner.page) {
+    await live2d.start(null); // No browser needed, renders in-page
     const success = await live2d.injectIntoMeet(meetJoiner.page);
     if (success) {
-      console.log(LOG, 'Live2D avatar active as camera feed');
-
-      // Try to enable camera in Meet now that we have Live2D
-      try {
-        await meetJoiner.page.evaluate(() => {
-          // Click camera toggle to turn it ON
-          const camBtn = document.querySelector(
-            '[aria-label*="camera" i][data-is-muted="true"], ' +
-            '[aria-label*="cámara" i][data-is-muted="true"]'
-          );
-          if (camBtn) {
-            camBtn.click();
-            console.log('[MeetBot] Enabled camera for Live2D');
-          }
-        });
-      } catch (e) {
-        console.log(LOG, 'Could not auto-enable camera:', e.message);
-      }
+      console.log(LOG, 'Live2D avatar active as camera feed (WebCodecs mode)');
     }
   }
 });
 
 // Lip sync during TTS playback
+aiResponder.on('skip', () => {
+  if (config.live2dEnabled && live2d.active) {
+    live2d.setStatus('idle');
+  }
+});
+
 aiResponder.on('speaking-start', () => {
   if (config.live2dEnabled && meetJoiner.page && live2d.active) {
-    live2d.startLipSync(meetJoiner.page);
+    live2d.startSpeaking();
   }
 });
 
 aiResponder.on('speaking-end', () => {
   if (config.live2dEnabled && meetJoiner.page && live2d.active) {
-    live2d.stopLipSync(meetJoiner.page);
+    live2d.stopSpeaking();
   }
 });
 

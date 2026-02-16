@@ -19,28 +19,41 @@ services:
       retries: 3
       start_period: 10s
 
-  whisper:
-    image: ${WHISPER_IMAGE:-onerahmet/openai-whisper-asr-webservice:latest-gpu}
-    container_name: openclaw-whisper
+  speaches-stt:
+    image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cuda}
+    container_name: openclaw-speaches-stt
     restart: unless-stopped
     ports:
-      - "${WHISPER_PORT:-9000}:9000"
+      - "${WHISPER_PORT:-9000}:8000"
     environment:
-      - ASR_MODEL=${ASR_MODEL:-large-v3-turbo}
-      - ASR_ENGINE=faster_whisper
+      - WHISPER__MODEL=${ASR_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - WHISPER__INFERENCE_DEVICE=cuda
     volumes:
-      - whisper-cache:/root/.cache
+      # IMPORTANT: Mount model as volume, do NOT bake into image via docker commit.
+      # Docker overlay2 adds ~2x latency regression for large model files.
+      - whisper-models:/home/ubuntu/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # Optional: uncomment to use Kokoro local TTS (GPU recommended)
   # kokoro-tts:
-  #   image: ${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:latest}
+  #   image: ${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-gpu:latest}
   #   container_name: openclaw-kokoro-tts
   #   restart: unless-stopped
   #   ports:
-  #     - "${KOKORO_PORT:-5004}:8080"
-  #   volumes:
-  #     - kokoro-cache:/models
+  #     - "${KOKORO_PORT:-5004}:8880"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
 
 volumes:
-  whisper-cache:
-  # kokoro-cache:
+  whisper-models:

@@ -232,10 +232,12 @@ async function transcribe(audio) {
       const baseUrl = WHISPER_URL.replace(/\/asr.*$/, '');
       const url = baseUrl + '/v1/audio/transcriptions';
       const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`);
+      const whisperModel = process.env.WHISPER_MODEL || 'Systran/faster-whisper-large-v3-turbo';
+      const modelPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${whisperModel}`);
       const langPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nes`);
       const fmtPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson`);
       const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([header, audio, langPart, fmtPart, footer]);
+      const body = Buffer.concat([header, audio, modelPart, langPart, fmtPart, footer]);
       const res = await httpReq(url, {
         method: 'POST',
         headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
@@ -363,9 +365,29 @@ function generateTTS_XTTS(text) {
   }
 }
 
-/** Kokoro TTS — local GPU, fastest option (~400ms on RTX 3090) */
+/** Kokoro TTS — local GPU, fastest option (~320ms on RTX 3090 with FastAPI) */
+/** Supports both Kokoro-FastAPI (OpenAI-compatible /v1/audio/speech) and legacy Flask (/tts) */
+let _kokoroApi = null; // 'openai' or 'legacy'
 async function generateTTS_Kokoro(text) {
   try {
+    // Try OpenAI-compatible API first (Kokoro-FastAPI), fall back to legacy Flask
+    if (_kokoroApi !== 'legacy') {
+      try {
+        const resp = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'kokoro', input: text, voice: KOKORO_VOICE, response_format: 'wav', speed: 1.0 }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) throw new Error(`Kokoro-FastAPI HTTP ${resp.status}`);
+        if (_kokoroApi !== 'openai') { _kokoroApi = 'openai'; console.log('🔊 Using Kokoro-FastAPI (OpenAI-compatible)'); }
+        return Buffer.from(await resp.arrayBuffer());
+      } catch (e) {
+        if (_kokoroApi === 'openai') throw e;
+        // Fall through to legacy
+      }
+    }
+    // Legacy Flask API (/tts)
     const resp = await fetch(`${KOKORO_URL}/tts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -373,6 +395,7 @@ async function generateTTS_Kokoro(text) {
       signal: AbortSignal.timeout(15000),
     });
     if (!resp.ok) throw new Error(`Kokoro HTTP ${resp.status}`);
+    if (_kokoroApi !== 'legacy') { _kokoroApi = 'legacy'; console.log('🔊 Using Kokoro legacy Flask API (/tts)'); }
     return Buffer.from(await resp.arrayBuffer());
   } catch (e) {
     console.error('Kokoro TTS error, falling back to Edge:', e.message);

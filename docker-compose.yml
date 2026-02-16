@@ -27,7 +27,8 @@ services:
       - "${PORT:-3200}:3200"
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-change-me}
-      - WHISPER_URL=http://whisper-asr:9000/asr?language=${ASR_LANGUAGE:-es}&output=json
+      - WHISPER_URL=http://speaches-stt:8000/v1/audio/transcriptions
+      - WHISPER_MODEL=${ASR_MODEL:-Systran/faster-whisper-large-v3-turbo}
       - GATEWAY_URL=${GATEWAY_URL:?Set GATEWAY_URL to your OpenClaw chat completions endpoint}
       - GATEWAY_TOKEN=${GATEWAY_TOKEN:?Set GATEWAY_TOKEN to your OpenClaw gateway token}
       - TTS_ENGINE=${TTS_ENGINE:-edge}
@@ -40,28 +41,31 @@ services:
     volumes:
       - speaker-profiles:/data/speakers
     depends_on:
-      whisper-asr:
+      speaches-stt:
         condition: service_started
 
-  # ─── Whisper ASR ───────────────────────────────────────────────────────────
+  # ─── Speaches STT (faster-whisper, CTranslate2) ────────────────────────────
   # CPU by default. For GPU, see docker-compose.gpu.yml override.
-  whisper-asr:
-    image: onerahmet/openai-whisper-asr-webservice:${WHISPER_IMAGE_TAG:-latest}
-    container_name: openclaw-companion-whisper
+  # Systran model requires HF_TOKEN (set in .env). Without it, falls back to
+  # deepdml/faster-whisper-large-v3-turbo-ct2 (ungated, same model weights).
+  speaches-stt:
+    image: ghcr.io/speaches-ai/speaches:${STT_IMAGE_TAG:-latest-cuda}
+    container_name: openclaw-companion-stt
     restart: unless-stopped
     ports:
-      - "${WHISPER_PORT:-9000}:9000"
+      - "${STT_PORT:-9000}:8000"
     environment:
-      - ASR_MODEL=${ASR_MODEL:-small}
-      - ASR_ENGINE=faster_whisper
+      - WHISPER__MODEL=${ASR_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - WHISPER__INFERENCE_DEVICE=${STT_DEVICE:-cuda}
+      - HF_TOKEN=${HF_TOKEN:-}
     volumes:
-      - whisper-models:/root/.cache
+      - whisper-models:/home/ubuntu/.cache/huggingface
 
-  # ─── Kokoro TTS (optional, local GPU, ~400ms) ──────────────────────────────
+  # ─── Kokoro FastAPI TTS (GPU, OpenAI-compatible, ~330ms) ───────────────────
   # Enable: set TTS_ENGINE=kokoro in .env, then:
   #   docker compose --profile kokoro up -d
   kokoro-tts:
-    image: ghcr.io/remsky/kokoro-fastapi:latest
+    image: ghcr.io/remsky/kokoro-fastapi-gpu:latest
     container_name: openclaw-companion-kokoro
     restart: unless-stopped
     profiles: ["kokoro"]

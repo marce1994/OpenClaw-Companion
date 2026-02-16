@@ -24,6 +24,8 @@ class AIResponder extends EventEmitter {
     this.accumulatedText = '';
     this.reconnectAttempts = 0;
     this.detectedLang = config.defaultLang || 'es'; // Current meeting language
+    this.lastResponseTime = 0; // Cooldown tracking
+    this.responseCooldownMs = 10000; // 10s cooldown after each response
   }
 
   setMeetingId(id) { this.meetingId = id; }
@@ -225,53 +227,48 @@ class AIResponder extends EventEmitter {
     const isSummary = /\b(resumen|summary|resumir)\b/i.test(text);
     // Match bot name + common Whisper mis-transcriptions
     const nameVariants = [botName, 'jervis', 'jarves', 'jarvis', 'shervis', 'charvis', 'jarviz', 'jarbi', 'jarby', 'yarvis', 'xervis', 'charbis', 'jarbis', 'chervis', 'gervis', 'harvis'];
-    const isTrigger = nameVariants.some(v => text.includes(v));
+    const nameMentioned = nameVariants.some(v => text.includes(v));
 
-    console.log(LOG, `Trigger check: "${text.substring(0,50)}" botName="${botName}" found=${isTrigger} connected=${this.connected} processing=${this.processing}`);
+    // Cooldown check
+    const now = Date.now();
+    const inCooldown = (now - this.lastResponseTime) < this.responseCooldownMs;
 
-    if (isSummary && isTrigger) {
+    console.log(LOG, `Transcript: "${text.substring(0,60)}" name=${nameMentioned} processing=${this.processing} cooldown=${inCooldown}`);
+
+    if (this.processing || !this.connected) return;
+    if (inCooldown && !nameMentioned) return; // Skip proactive during cooldown, but allow name mentions
+
+    if (isSummary) {
       this._requestSummary();
-    } else if (isTrigger) {
-      this._respondToMention(entry.text);
-    } else if (!this.processing) {
-      // Proactive mode: respond to all speech, let the AI decide if it should respond
-      this._respondProactive(entry.text);
+    } else {
+      // Unified proactive mode — AI decides whether to respond
+      this._respondProactive(entry.text, nameMentioned);
     }
   }
 
-  _respondProactive(transcriptText) {
+  _respondProactive(transcriptText, nameMentioned = false) {
     if (this.processing) return;
     this.processing = true;
 
     const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || '?'}]: ${t.text}`).join('\n');
 
-    const message = `Estás en una reunión de Google Meet como ${config.botName}. `
-      + `Escuchás la conversación. Solo respondé si podés aportar algo útil (responder una pregunta, dar info, opinar). `
-      + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP". No digas nada más que "SKIP" si no tenés nada que aportar.\n\n`
-      + `Contexto reciente:\n${context}\n\nÚltimo: "${transcriptText}"`;
-
-    this._sendChat(message);
-  }
-
-  _respondToMention(triggerText) {
-    if (this.processing) return;
-    this.processing = true;
-
-    const context = this.recentTranscripts
-      .slice(-10)
-      .map(t => `${t.speaker || 'Participant'}: ${t.text}`)
-      .join('\n');
+    const nameHint = nameMentioned
+      ? `Your name ("${config.botName}") was mentioned, but they might be talking ABOUT you, not TO you. Only respond if they're clearly addressing you or asking you something directly. `
+      : '';
 
     const langInstruction = this.detectedLang === 'en'
-      ? `You are in a Google Meet call as ${config.botName}. Someone mentioned you. Reply naturally and concisely (1-3 sentences, it will be read aloud). Reply in English.`
-      : `Estás en una reunión de Google Meet como ${config.botName}. Alguien te mencionó. Respondé de forma natural y concisa (1-3 oraciones, se va a leer en voz alta). Respondé en español.`;
+      ? `You are in a Google Meet call as ${config.botName}. You hear the conversation. `
+        + nameHint
+        + `Only respond if you can add real value (answer a question, provide info, give an opinion when asked). `
+        + `Keep it concise (1-3 sentences, it will be read aloud). Reply in English.\n`
+        + `If the conversation doesn't need you, reply EXACTLY "SKIP" and nothing else.`
+      : `Estás en una reunión de Google Meet como ${config.botName}. Escuchás la conversación. `
+        + nameHint
+        + `Solo respondé si podés aportar algo útil (responder una pregunta, dar info, opinar cuando te preguntan). `
+        + `Sé conciso (1-3 oraciones, se va a leer en voz alta). Respondé en español.\n`
+        + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP" y nada más.`;
 
-    const prompt = `${langInstruction}
-
-Contexto reciente:
-${context}
-
-Mensaje que te mencionó: "${triggerText}"`;
+    const prompt = `${langInstruction}\n\nContexto reciente:\n${context}\n\nÚltimo: "${transcriptText}"`;
 
     this._sendChat(prompt);
   }
@@ -347,8 +344,10 @@ ${transcript}`;
       if (text.trim() === 'SKIP' || text.trim() === 'NO_REPLY' || text.trim() === 'HEARTBEAT_OK') {
         console.log(LOG, 'AI skipped (no relevant response)');
         this.processing = false;
+        this.emit('skip');
         return;
       }
+      this.lastResponseTime = Date.now(); // Start cooldown
       const audioBuffer = await this._getTTS(text);
       if (audioBuffer?.length > 0) {
         // Start lip sync animation
@@ -385,17 +384,38 @@ ${transcript}`;
     }
   }
 
+  /** Kokoro TTS — supports both FastAPI (OpenAI-compatible) and legacy Flask */
   _kokoroTTS(text) {
     return new Promise((resolve, reject) => {
       const url = new URL(config.kokoroUrl);
       const voice = this.detectedLang === 'en' ? config.kokoroVoiceEn : config.kokoroVoice;
-      const body = JSON.stringify({ text, voice, lang: this.detectedLang, speed: 1.0 });
+      // Try OpenAI-compatible API first (Kokoro-FastAPI)
+      const body = JSON.stringify({ model: 'kokoro', input: text, voice, response_format: 'wav', speed: 1.0 });
       const req = http.request({
         hostname: url.hostname, port: url.port,
-        path: '/tts', method: 'POST',
+        path: '/v1/audio/speech', method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
         timeout: 30000,
       }, (res) => {
+        if (res.statusCode === 404 || res.statusCode === 405) {
+          // Fall back to legacy Flask API
+          console.log('[meet] Kokoro-FastAPI not found, falling back to legacy /tts');
+          const legacyBody = JSON.stringify({ text, voice, lang: this.detectedLang, speed: 1.0 });
+          const legacyReq = http.request({
+            hostname: url.hostname, port: url.port,
+            path: '/tts', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(legacyBody) },
+            timeout: 30000,
+          }, (lRes) => {
+            const chunks = [];
+            lRes.on('data', c => chunks.push(c));
+            lRes.on('end', () => resolve(Buffer.concat(chunks)));
+          });
+          legacyReq.on('error', reject);
+          legacyReq.write(legacyBody);
+          legacyReq.end();
+          return;
+        }
         const chunks = [];
         res.on('data', c => chunks.push(c));
         res.on('end', () => resolve(Buffer.concat(chunks)));

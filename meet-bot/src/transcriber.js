@@ -44,6 +44,9 @@ class Transcriber extends EventEmitter {
     const rms = this._calculateRMS(chunk);
 
     if (rms > this.vadThreshold) {
+      if (!this.speechActive) {
+        this.emit('voice-start');
+      }
       this.speechActive = true;
       this.silenceFrames = 0;
       this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -55,6 +58,7 @@ class Transcriber extends EventEmitter {
       if (this.silenceFrames >= silenceThreshold) {
         this.speechActive = false;
         this.silenceFrames = 0;
+        this.emit('voice-end');
       }
     }
 
@@ -161,17 +165,24 @@ class Transcriber extends EventEmitter {
   _sendToWhisper(wavBuffer) {
     return new Promise((resolve, reject) => {
       const url = new URL(config.whisperUrl);
-      // Don't set language — let Whisper auto-detect for bilingual meetings
-      url.searchParams.set('output', 'json');
-      // Bias Whisper to recognize the bot name correctly
-      url.searchParams.set('initial_prompt', `Jarvis, ${config.botName}`);
+      // Use OpenAI-compatible API (/v1/audio/transcriptions)
+      url.pathname = '/v1/audio/transcriptions';
+      // Clear any /asr query params
+      url.search = '';
 
       const boundary = '----FormBoundary' + Date.now().toString(16);
+      const modelName = process.env.WHISPER_MODEL || 'Systran/faster-whisper-large-v3-turbo';
       const preamble = Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="audio_file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`
+      );
+      const modelPart = Buffer.from(
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${modelName}`
+      );
+      const fmtPart = Buffer.from(
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson`
       );
       const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([preamble, wavBuffer, epilogue]);
+      const body = Buffer.concat([preamble, wavBuffer, modelPart, fmtPart, epilogue]);
 
       const options = {
         hostname: url.hostname,

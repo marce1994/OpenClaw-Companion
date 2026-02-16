@@ -11,11 +11,11 @@ const config = {
   meetPort: parseInt(process.env.MEET_PORT || '3300', 10),
   googleCookie: process.env.GOOGLE_COOKIE || '',
   gwSessionKey: process.env.GW_SESSION_KEY || 'meet',
-  kokoroVoiceEn: process.env.KOKORO_VOICE_EN || 'af_heart',
+  kokoroVoiceEn: process.env.KOKORO_VOICE_EN || 'bm_george',
   defaultLang: process.env.DEFAULT_LANG || 'es', // 'en' or 'es'
   chromePath: process.env.CHROME_PATH || '/usr/bin/chromium',
   meetingsDir: process.env.MEETINGS_DIR || '/data/meetings',
-  live2dModel: process.env.LIVE2D_MODEL || 'Mao',
+  live2dModel: process.env.LIVE2D_MODEL || 'wanko',
   live2dEnabled: process.env.LIVE2D_ENABLED !== 'false', // enabled by default
   // Calendar auto-join
   calendarIcsUrl: process.env.GOOGLE_CALENDAR_ICS || '',

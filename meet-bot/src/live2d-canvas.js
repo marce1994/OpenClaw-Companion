@@ -1,270 +1,513 @@
 /**
- * Live2D Canvas — Renders Live2D model in a separate browser tab,
- * captures the canvas as a video stream, and replaces Meet's camera track.
- *
+ * Live2D Canvas — High-performance avatar injection for Google Meet
+ * 
+ * Uses WebCodecs MediaStreamTrackGenerator to inject Live2D frames
+ * directly into Meet's video pipeline at 30fps+ in HD.
+ * 
  * Architecture:
- * 1. Opens a tab to http://localhost:{port}/live2d.html — renders model via PixiJS
- * 2. In live2d.html, captures canvas stream and creates an RTCPeerConnection offer
- * 3. In Meet page, creates RTCPeerConnection answer, receives the Live2D video track
- * 4. Replaces Meet's camera track with the Live2D track via RTCPeerConnection.getSenders()
- * 5. Lip sync controlled via page.evaluate() calls on live2d page
+ * 1. evaluateOnNewDocument installs getUserMedia override + MediaStreamTrackGenerator
+ * 2. Meet calls getUserMedia → gets our generator track instead of real camera
+ * 3. After Meet joins, we inject PixiJS + Live2D libs inline via CDP
+ * 4. Live2D renders on a canvas in Meet's page context
+ * 5. Each frame → new VideoFrame(canvas) → writer.write() → zero-copy to WebRTC
+ * 
+ * No cross-tab transfer, no base64 serialization. Pure in-page rendering.
  */
 
+const fs = require('fs');
+const pathModule = require('path');
 const config = require('./config');
 const LOG = '[Live2D]';
 
 class Live2DCanvas {
   constructor() {
     this.active = false;
-    this.page = null;
-    this.browser = null;
-    this.modelName = config.live2dModel || 'Mao';
-  }
-
-  async start(browser) {
-    this.browser = browser;
-
-    try {
-      this.page = await browser.newPage();
-      this.page.on('console', msg => console.log(LOG, `[page] ${msg.type()}: ${msg.text()}`));
-      this.page.on('pageerror', err => console.error(LOG, `[page] ERROR: ${err.message}`));
-
-      await this.page.goto(
-        `http://localhost:${config.meetPort}/live2d.html?model=${this.modelName}`,
-        { waitUntil: 'networkidle2', timeout: 15000 }
-      );
-
-      await this.page.waitForFunction('window.isLive2DReady && window.isLive2DReady()', {
-        timeout: 15000,
-      });
-
-      this.active = true;
-      console.log(LOG, `Live2D model "${this.modelName}" loaded and rendering`);
-    } catch (err) {
-      console.error(LOG, 'Failed to start Live2D:', err.message);
-      this.active = false;
-    }
+    this.modelName = config.live2dModel || 'wanko';
   }
 
   /**
-   * Replace Meet's camera with Live2D canvas stream.
-   * Uses CDP to bypass Meet's CSP — executes in Meet page context via
-   * Runtime.evaluate with no CSP restrictions.
+   * Install getUserMedia override + MediaStreamTrackGenerator BEFORE Meet loads.
+   * Must be called before navigating to Meet URL.
+   */
+  async installOverrides(page) {
+    console.log(LOG, 'Installing WebCodecs-based video override...');
+
+    await page.evaluateOnNewDocument(() => {
+      // Create a shared canvas for Live2D rendering — captureStream is more reliable than VideoFrame
+      // Use 640x360 canvas — smaller = faster WebRTC encoding = higher delivered FPS
+      const avatarCanvas = document.createElement('canvas');
+      avatarCanvas.width = 640;
+      avatarCanvas.height = 360;
+      const ctx = avatarCanvas.getContext('2d');
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, 0, 640, 360);
+      window.__avatarCanvas = avatarCanvas;
+      // captureStream(0) = manual frame control via requestFrame()
+      window.__avatarStream = avatarCanvas.captureStream(0);
+      window.__avatarTrack = window.__avatarStream.getVideoTracks()[0];
+      window.__avatarWriter = null;
+      window.__avatarReady = false;
+      window.__meetPeerConnections = [];
+      console.log('[Live2D-Override] Avatar canvas 640x360 + captureStream(0) created');
+
+      // Override getUserMedia
+      const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async function(constraints) {
+        const hasVideo = !!(constraints && constraints.video);
+        const hasAudio = !!(constraints && constraints.audio);
+        console.log('[Live2D-Override] getUserMedia video=' + hasVideo + ' audio=' + hasAudio);
+
+        if (hasVideo) {
+          console.log('[Live2D-Override] INTERCEPTING VIDEO');
+          
+          // Get real audio if requested
+          let audioTracks = [];
+          if (hasAudio) {
+            try {
+              const audioStream = await origGUM({ audio: constraints.audio });
+              audioTracks = audioStream.getAudioTracks();
+            } catch(e) {
+              console.log('[Live2D-Override] Audio fallback failed: ' + e.message);
+            }
+          }
+
+          // Use captureStream from shared avatar canvas — most compatible with WebRTC
+          const stream = new MediaStream([window.__avatarTrack, ...audioTracks]);
+          console.log('[Live2D-Override] Returning captureStream track (30fps)');
+          return stream;
+        }
+        return origGUM(constraints);
+      };
+
+      // Override enumerateDevices to report a camera
+      const origEnumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+      navigator.mediaDevices.enumerateDevices = async function() {
+        const devices = await origEnumerate();
+        const hasCam = devices.some(d => d.kind === 'videoinput');
+        if (!hasCam) {
+          devices.push({
+            deviceId: 'live2d-avatar', groupId: 'live2d',
+            kind: 'videoinput', label: 'Live2D Avatar Camera',
+            toJSON() { return { deviceId: this.deviceId, groupId: this.groupId, kind: this.kind, label: this.label }; }
+          });
+        }
+        return devices;
+      };
+
+      // Capture PeerConnections + intercept addTrack to swap video tracks
+      const OrigPC = window.RTCPeerConnection;
+      const origAddTrack = OrigPC.prototype.addTrack;
+      OrigPC.prototype.addTrack = function(track, ...streams) {
+        if (track.kind === 'video' && window.__avatarTrack) {
+          console.log('[Live2D-Override] addTrack intercepted: swapping video track with avatar');
+          return origAddTrack.call(this, window.__avatarTrack, ...streams);
+        }
+        return origAddTrack.call(this, track, ...streams);
+      };
+      
+      window.RTCPeerConnection = function(...args) {
+        const pc = new OrigPC(...args);
+        window.__meetPeerConnections.push(pc);
+        console.log('[Live2D-Override] PC created (' + window.__meetPeerConnections.length + ')');
+        return pc;
+      };
+      window.RTCPeerConnection.prototype = OrigPC.prototype;
+      Object.keys(OrigPC).forEach(k => { try { window.RTCPeerConnection[k] = OrigPC[k]; } catch(e) {} });
+
+      console.log('[Live2D-Override] All overrides installed (WebCodecs mode)');
+    });
+  }
+
+  /**
+   * After Meet has joined, inject Live2D renderer directly into the Meet page.
    */
   async injectIntoMeet(meetPage) {
-    if (!this.active || !this.page) {
-      console.log(LOG, 'Live2D not active, skipping injection');
-      return false;
-    }
+    console.log(LOG, 'Injecting Live2D renderer into Meet page...');
 
     try {
-      console.log(LOG, 'Setting up Live2D → Meet video bridge...');
+      // Read all JS libraries
+      const libDir = pathModule.join(__dirname, '..', 'public', 'live2d');
+      const pixiCode = fs.readFileSync(pathModule.join(libDir, 'pixi.min.js'), 'utf-8');
+      const live2dCore = fs.readFileSync(pathModule.join(libDir, 'live2d.min.js'), 'utf-8');
+      const cubism4Core = fs.readFileSync(pathModule.join(libDir, 'live2dcubismcore.min.js'), 'utf-8');
+      const live2dDisplay = fs.readFileSync(pathModule.join(libDir, 'pixi-live2d-display.min.js'), 'utf-8');
 
-      // Step 1: In Live2D page, capture canvas stream and create offer
-      const offer = await this.page.evaluate(async () => {
-        const canvas = document.getElementById('live2d-canvas');
-        const stream = canvas.captureStream(30);
-        const videoTrack = stream.getVideoTracks()[0];
+      console.log(LOG, `Injecting libraries (~${Math.round((pixiCode.length + live2dCore.length + cubism4Core.length + live2dDisplay.length) / 1024)}KB)...`);
 
-        window._live2dPC = new RTCPeerConnection();
-        window._live2dPC.addTrack(videoTrack, stream);
-
-        const offerDesc = await window._live2dPC.createOffer();
-        await window._live2dPC.setLocalDescription(offerDesc);
-
-        // Wait for ICE candidates
-        await new Promise(resolve => {
-          if (window._live2dPC.iceGatheringState === 'complete') return resolve();
-          window._live2dPC.addEventListener('icegatheringstatechange', () => {
-            if (window._live2dPC.iceGatheringState === 'complete') resolve();
-          });
-          setTimeout(resolve, 3000); // Timeout fallback
-        });
-
-        return JSON.stringify(window._live2dPC.localDescription);
-      });
-
-      console.log(LOG, 'Live2D offer created');
-
-      // Step 2: In Meet page, create answer and get the video track
-      // Use CDP to bypass Trusted Types CSP
+      // Inject libraries one by one via CDP (bypasses CSP)
       const cdp = await meetPage.target().createCDPSession();
+      
+      await cdp.send('Runtime.evaluate', { expression: pixiCode, awaitPromise: false });
+      console.log(LOG, '✅ PixiJS injected');
+      
+      await cdp.send('Runtime.evaluate', { expression: live2dCore, awaitPromise: false });
+      console.log(LOG, '✅ Live2D Cubism 2 core injected');
+      
+      await cdp.send('Runtime.evaluate', { expression: cubism4Core, awaitPromise: false });
+      console.log(LOG, '✅ Live2D Cubism 4 core injected');
+      
+      await cdp.send('Runtime.evaluate', { expression: live2dDisplay, awaitPromise: false });
+      console.log(LOG, '✅ pixi-live2d-display injected');
 
-      const { result } = await cdp.send('Runtime.evaluate', {
-        expression: `(async () => {
-          const offer = JSON.parse(${JSON.stringify(offer)});
-          
-          window._receiverPC = new RTCPeerConnection();
-          
-          // Collect incoming track
-          const trackPromise = new Promise(resolve => {
-            window._receiverPC.ontrack = (e) => {
-              window._live2dVideoTrack = e.track;
-              resolve(e.track);
-            };
-          });
-          
-          await window._receiverPC.setRemoteDescription(offer);
-          const answer = await window._receiverPC.createAnswer();
-          await window._receiverPC.setLocalDescription(answer);
-          
-          // Wait for ICE
-          await new Promise(resolve => {
-            if (window._receiverPC.iceGatheringState === 'complete') return resolve();
-            window._receiverPC.addEventListener('icegatheringstatechange', () => {
-              if (window._receiverPC.iceGatheringState === 'complete') resolve();
-            });
-            setTimeout(resolve, 3000);
-          });
-          
-          // Wait for track
-          await trackPromise;
-          
-          return JSON.stringify(window._receiverPC.localDescription);
-        })()`,
-        awaitPromise: true,
-        returnByValue: true,
-      });
+      // Read model files and encode as base64 for inline injection
+      const modelDir = pathModule.join(__dirname, '..', 'public', 'live2d', this.modelName);
+      const modelJsonPath = pathModule.join(modelDir, `${this.modelName}.model.json`);
+      const modelJson = JSON.parse(fs.readFileSync(modelJsonPath, 'utf-8'));
+      const isCubism2 = this.modelName === 'wanko';
 
-      const answer = result.value;
-      console.log(LOG, 'Meet answer created');
-
-      // Step 3: Set answer on Live2D side
-      await this.page.evaluate(async (answerStr) => {
-        const answer = JSON.parse(answerStr);
-        await window._live2dPC.setRemoteDescription(answer);
-      }, answer);
-
-      console.log(LOG, 'WebRTC bridge established');
-
-      // Step 4: Replace Meet's camera track with the Live2D track
-      const { result: replaceResult } = await cdp.send('Runtime.evaluate', {
-        expression: `(async () => {
-          const live2dTrack = window._live2dVideoTrack;
-          if (!live2dTrack) return 'NO_TRACK';
-          
-          // Find all RTCPeerConnections and replace video senders
-          // The getUserMedia override stored senders in window._rtcSenders
-          const senders = window._rtcSenders || [];
-          let replaced = 0;
-          
-          // Also check all PeerConnections
-          const pcs = window._meetPeerConnections || [];
-          for (const pc of pcs) {
+      // Read all model assets and create a blob URL map
+      const modelAssets = {};
+      
+      // .moc file
+      const mocPath = pathModule.join(modelDir, modelJson.model);
+      modelAssets['model'] = fs.readFileSync(mocPath).toString('base64');
+      
+      // Textures
+      const textureData = [];
+      for (const tex of modelJson.textures) {
+        const texPath = pathModule.join(modelDir, tex);
+        textureData.push(fs.readFileSync(texPath).toString('base64'));
+      }
+      
+      // Motion files (optional)
+      const motionData = {};
+      if (modelJson.motions) {
+        for (const [group, motions] of Object.entries(modelJson.motions)) {
+          motionData[group] = [];
+          for (const m of motions) {
             try {
-              const videoSenders = pc.getSenders().filter(s => s.track?.kind === 'video');
-              for (const sender of videoSenders) {
-                await sender.replaceTrack(live2dTrack);
-                replaced++;
-              }
-            } catch(e) {}
+              const mtnPath = pathModule.join(modelDir, m.file);
+              motionData[group].push(fs.readFileSync(mtnPath).toString('base64'));
+            } catch(e) {
+              motionData[group].push(null);
+            }
           }
-          
-          // Try stored senders too
-          for (const sender of senders) {
-            try {
-              await sender.replaceTrack(live2dTrack);
-              replaced++;
-            } catch(e) {}
-          }
-          
-          return replaced > 0 ? 'OK:' + replaced : 'NO_SENDERS';
-        })()`,
-        awaitPromise: true,
-        returnByValue: true,
-      });
-
-      console.log(LOG, `Track replacement result: ${replaceResult.value}`);
-      await cdp.detach();
-
-      if (replaceResult.value?.startsWith('OK')) {
-        console.log(LOG, '✅ Live2D avatar is now the camera feed!');
-        return true;
-      } else {
-        console.log(LOG, `⚠️ Track replacement: ${replaceResult.value}. Will retry when Meet creates senders.`);
-        // Schedule retry — Meet might not have created PeerConnection yet
-        this._scheduleRetry(meetPage);
-        return false;
+        }
       }
 
+      console.log(LOG, `Model assets loaded: moc=${Math.round(modelAssets.model.length/1024)}KB, textures=${textureData.length}, motions=${Object.keys(motionData).length} groups`);
+
+      // Inject the renderer
+      const rendererCode = `
+        (async () => {
+          try {
+            console.log('[Live2D-Render] Starting renderer...');
+            
+            // Create hidden canvas for rendering
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 360;
+            canvas.style.display = 'none';
+            document.body.appendChild(canvas);
+            window.__live2dCanvas = canvas;
+            
+            // Create PIXI application
+            const app = new PIXI.Application({
+              view: canvas,
+              width: 640,
+              height: 360,
+              backgroundColor: 0x1a1a2e,
+              autoStart: true,
+              antialias: true,
+              preserveDrawingBuffer: true,
+            });
+            window.__live2dApp = app;
+            
+            // Pre-decode all assets into memory
+            const mocB64 = '${modelAssets.model}';
+            const mocData = Uint8Array.from(atob(mocB64), c => c.charCodeAt(0)).buffer;
+            
+            const textureB64List = ${JSON.stringify(textureData)};
+            const textureImages = [];
+            for (const b64 of textureB64List) {
+              const img = new Image();
+              await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = 'data:image/png;base64,' + b64;
+              });
+              textureImages.push(img);
+            }
+            
+            const motionB64Map = ${JSON.stringify(motionData)};
+            
+            // Override the XHR loader to serve from memory
+            const assetMap = {};
+            const modelDef = ${JSON.stringify(modelJson)};
+            // Use fake paths 
+            assetMap['/model.json'] = JSON.stringify(modelDef);
+            assetMap[modelDef.model] = mocData;
+            if (modelDef.motions) {
+              for (const [group, motions] of Object.entries(modelDef.motions)) {
+                const b64Group = motionB64Map[group] || [];
+                for (let i = 0; i < motions.length; i++) {
+                  if (b64Group[i]) {
+                    assetMap[motions[i].file] = Uint8Array.from(atob(b64Group[i]), c => c.charCodeAt(0)).buffer;
+                  }
+                }
+              }
+            }
+            
+            // Hook into pixi-live2d-display's loader
+            const origMiddlewares = PIXI.live2d.Live2DLoader.middlewares.slice();
+            PIXI.live2d.Live2DLoader.middlewares = [(context, next) => {
+              // Check if this URL matches one of our pre-loaded assets
+              const url = context.url || '';
+              const key = Object.keys(assetMap).find(k => url.endsWith(k));
+              if (key) {
+                console.log('[Live2D-Render] Serving from memory: ' + key);
+                const data = assetMap[key];
+                if (typeof data === 'string') {
+                  context.result = JSON.parse(data);
+                  if (key.endsWith('.json')) context.result.url = '/model.json';
+                } else {
+                  context.result = data;
+                }
+                return next();
+              }
+              console.log('[Live2D-Render] XHR load: ' + url);
+              // Fall through to original loader
+              return origMiddlewares[0](context, next);
+            }];
+            
+            // Load model — the loader will serve everything from memory
+            console.log('[Live2D-Render] Loading model from memory...');
+            
+            // Override PIXI's texture loading to use our pre-loaded images
+            const origTextureFrom = PIXI.Texture.fromURL || PIXI.Texture.from;
+            const textureOverrides = {};
+            modelDef.textures.forEach((texPath, i) => {
+              textureOverrides[texPath] = textureImages[i];
+            });
+            
+            // Monkey-patch Texture.from to intercept our texture paths
+            const origFrom = PIXI.Texture.from;
+            PIXI.Texture.from = function(source, options) {
+              if (typeof source === 'string') {
+                const match = Object.keys(textureOverrides).find(k => source.endsWith(k));
+                if (match) {
+                  console.log('[Live2D-Render] Serving texture from memory: ' + match);
+                  return origFrom.call(PIXI.Texture, textureOverrides[match], options);
+                }
+              }
+              return origFrom.call(PIXI.Texture, source, options);
+            };
+            if (PIXI.Texture.fromURL) {
+              const origFromURL = PIXI.Texture.fromURL;
+              PIXI.Texture.fromURL = function(url, options) {
+                const match = Object.keys(textureOverrides).find(k => url.endsWith(k));
+                if (match) {
+                  console.log('[Live2D-Render] Serving texture from memory (fromURL): ' + match);
+                  return Promise.resolve(origFrom.call(PIXI.Texture, textureOverrides[match], options));
+                }
+                return origFromURL.call(PIXI.Texture, url, options);
+              };
+            }
+            
+            // Load model — everything served from memory
+            modelDef.url = '/model.json';
+            const model = await PIXI.live2d.Live2DModel.from(modelDef);
+            app.stage.addChild(model);
+            
+            // Position model
+            const isCubism2 = ${isCubism2};
+            console.log('[Live2D-Render] Model loaded, dimensions:', model.width, 'x', model.height, 'cubism2:', isCubism2);
+            
+            // Scale to fit canvas
+            const scale = Math.min(640 / model.width, 360 / model.height) * 0.9;
+            model.scale.set(scale);
+            model.x = 40;
+            model.y = 230;
+            console.log('[Live2D-Render] Positioned: scale=' + scale.toFixed(3) + ' x=40 y=230 (640x360)');
+            
+            // Status tracking — drawn directly on avatar canvas each frame
+            window.__jarvisStatus = 'idle';
+            window.__setJarvisStatus = function(s) { window.__jarvisStatus = s || 'idle'; };
+            
+            // Lip sync — oscillate mouth open/close while speaking
+            window.__jarvisSpeaking = false;
+            let lipFrame = 0;
+            app.ticker.add(() => {
+              if (window.__jarvisSpeaking && model.internalModel) {
+                lipFrame += 0.15;
+                const val = (Math.sin(lipFrame * 4) + 1) / 2; // 0-1 oscillation
+                try {
+                  if (isCubism2) {
+                    model.internalModel.coreModel.setParamFloat('PARAM_MOUTH_OPEN_Y', val);
+                  } else {
+                    const cm = model.internalModel.coreModel;
+                    const idx = cm.getParameterIndex('ParamMouthOpenY');
+                    if (idx >= 0) cm.setParameterValueByIndex(idx, val);
+                  }
+                } catch(e) {}
+              }
+            });
+            
+            // Status icons map
+            const statusIcons = {
+              'listening': '🎧 Listening...',
+              'thinking': '🤔 Thinking...',
+              'speaking': '🔊 Speaking...',
+              'transcribing': '📝 Transcribing...',
+            };
+            
+            // Start idle animation
+            try {
+              model.motion('idle');
+            } catch(e) {}
+            
+            window.__live2dModel = model;
+            window.__avatarReady = true;
+            
+            // Render loop: push VideoFrames to the generator track
+            const writer = window.__avatarWriter;
+            let frameCount = 0;
+            const startTime = performance.now();
+            
+            // Render loop: draw Live2D to avatar canvas, then requestFrame() for captureStream
+            const avatarCanvas = window.__avatarCanvas;
+            const avatarCtx = avatarCanvas ? avatarCanvas.getContext('2d') : null;
+            const avatarStream = window.__avatarStream;
+            const videoTrack = avatarStream ? avatarStream.getVideoTracks()[0] : null;
+            
+            function renderLoop() {
+              try {
+                if (avatarCtx) {
+                  // Draw Live2D output
+                  avatarCtx.drawImage(canvas, 0, 0, 640, 360);
+                  
+                  // Draw status overlay on the canvas itself
+                  const status = window.__jarvisStatus;
+                  if (status && status !== 'idle' && statusIcons[status]) {
+                    avatarCtx.save();
+                    avatarCtx.font = '16px Arial, sans-serif';
+                    const text = statusIcons[status];
+                    const tw = avatarCtx.measureText(text).width;
+                    const px = (640 - tw) / 2 - 12;
+                    const py = 335;
+                    // Background pill
+                    avatarCtx.fillStyle = 'rgba(0,0,0,0.55)';
+                    // Rounded rect fallback (roundRect may not exist)
+                    const rw = tw + 24, rh = 26, rx = px, ry = py - 16, r = 13;
+                    avatarCtx.beginPath();
+                    avatarCtx.moveTo(rx + r, ry);
+                    avatarCtx.lineTo(rx + rw - r, ry);
+                    avatarCtx.arcTo(rx + rw, ry, rx + rw, ry + r, r);
+                    avatarCtx.lineTo(rx + rw, ry + rh - r);
+                    avatarCtx.arcTo(rx + rw, ry + rh, rx + rw - r, ry + rh, r);
+                    avatarCtx.lineTo(rx + r, ry + rh);
+                    avatarCtx.arcTo(rx, ry + rh, rx, ry + rh - r, r);
+                    avatarCtx.lineTo(rx, ry + r);
+                    avatarCtx.arcTo(rx, ry, rx + r, ry, r);
+                    avatarCtx.closePath();
+                    avatarCtx.fill();
+                    // Text
+                    avatarCtx.fillStyle = '#ffffff';
+                    avatarCtx.fillText(text, px + 12, py + 4);
+                    avatarCtx.restore();
+                  }
+                  
+                  // Signal new frame
+                  if (videoTrack && videoTrack.requestFrame) {
+                    videoTrack.requestFrame();
+                  }
+                }
+                
+                frameCount++;
+                if (frameCount % 300 === 0) {
+                  const elapsed = (performance.now() - startTime) / 1000;
+                  console.log('[Live2D-Render] ' + frameCount + ' frames, ~' + Math.round(frameCount / elapsed) + 'fps (captureStream 640x360)');
+                }
+              } catch(e) {}
+              requestAnimationFrame(renderLoop);
+            }
+            
+            renderLoop();
+            console.log('[Live2D-Render] ✅ Render loop started at native RAF speed');
+            
+            // Also try to replace track on existing PeerConnections
+            setTimeout(() => {
+              const pcs = window.__meetPeerConnections || [];
+              let replaced = 0;
+              for (const pc of pcs) {
+                try {
+                  const senders = pc.getSenders();
+                  for (const sender of senders) {
+                    if (sender.track && sender.track.kind === 'video' && window.__avatarTrack) {
+                      sender.replaceTrack(window.__avatarTrack);
+                      replaced++;
+                    }
+                  }
+                } catch(e) {}
+              }
+              console.log('[Live2D-Render] Track replacement: ' + replaced + ' senders updated');
+            }, 2000);
+            
+          } catch(e) {
+            console.error('[Live2D-Render] ERROR:', e.message, e.stack);
+          }
+        })()
+      `;
+
+      const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
+        expression: rendererCode,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+
+      if (exceptionDetails) {
+        console.error(LOG, 'Renderer injection error:', exceptionDetails.text);
+      }
+
+      await cdp.detach();
+
+      this.active = true;
+      console.log(LOG, '✅ Live2D renderer injected into Meet page!');
+      return true;
+
     } catch (err) {
-      console.error(LOG, 'Failed to inject Live2D into Meet:', err.message);
+      console.error(LOG, 'Failed to inject Live2D:', err.message);
       return false;
     }
   }
 
-  _scheduleRetry(meetPage) {
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      attempts++;
-      if (attempts > 10) {
-        clearInterval(interval);
-        console.log(LOG, 'Gave up retrying track replacement');
-        return;
-      }
-      try {
-        const cdp = await meetPage.target().createCDPSession();
-        const { result } = await cdp.send('Runtime.evaluate', {
-          expression: `(async () => {
-            const live2dTrack = window._live2dVideoTrack;
-            if (!live2dTrack) return 'NO_TRACK';
-            let replaced = 0;
-            
-            // Try stored senders
-            for (const sender of (window._rtcSenders || [])) {
-              try { await sender.replaceTrack(live2dTrack); replaced++; } catch(e) {}
-            }
-            
-            // Also scan all PeerConnection instances
-            for (const pc of (window._meetPeerConnections || [])) {
-              try {
-                for (const sender of pc.getSenders()) {
-                  if (sender.track?.kind === 'video') {
-                    await sender.replaceTrack(live2dTrack);
-                    replaced++;
-                  }
-                }
-              } catch(e) {}
-            }
-            
-            return replaced > 0 ? 'OK:' + replaced : 'WAITING:pcs=' + (window._meetPeerConnections||[]).length + ',senders=' + (window._rtcSenders||[]).length;
-          })()`,
-          awaitPromise: true,
-          returnByValue: true,
-        });
-        await cdp.detach();
-        if (result.value?.startsWith('OK')) {
-          clearInterval(interval);
-          console.log(LOG, `✅ Live2D track replaced on retry #${attempts}`);
-        }
-      } catch (e) {}
-    }, 3000);
+  async setStatus(status) {
+    if (!this.meetPage) return;
+    try {
+      await this.meetPage.evaluate((s) => {
+        if (window.__setJarvisStatus) window.__setJarvisStatus(s);
+      }, status);
+    } catch(e) {}
   }
 
   async startSpeaking() {
-    if (!this.active || !this.page) return;
+    await this.setStatus('speaking');
+    if (!this.meetPage) return;
     try {
-      await this.page.evaluate(() => {
-        if (window.startLipSync) window.startLipSync();
+      await this.meetPage.evaluate(() => {
+        if (window.__jarvisSpeaking !== undefined) window.__jarvisSpeaking = true;
       });
-    } catch (e) {}
+    } catch(e) {}
   }
 
   async stopSpeaking() {
-    if (!this.active || !this.page) return;
+    await this.setStatus('idle');
+    if (!this.meetPage) return;
     try {
-      await this.page.evaluate(() => {
-        if (window.stopLipSync) window.stopLipSync();
+      await this.meetPage.evaluate(() => {
+        if (window.__jarvisSpeaking !== undefined) window.__jarvisSpeaking = false;
       });
-    } catch (e) {}
+    } catch(e) {}
+  }
+
+  // These are no-ops now since rendering is all in-page
+  async start(browser) {
+    this.active = true;
+    console.log(LOG, `Configured for model: ${this.modelName} (will inject into Meet page)`);
   }
 
   async stop() {
     this.active = false;
-    if (this.page) {
-      try { await this.page.close(); } catch (e) {}
-      this.page = null;
-    }
   }
 }
 

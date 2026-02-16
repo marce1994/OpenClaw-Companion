@@ -9,69 +9,126 @@
   </style>
 </head>
 <body>
-  <canvas id="live2d-canvas" width="640" height="480"></canvas>
+  <canvas id="live2d-canvas" width="320" height="240"></canvas>
 
+  <!-- Cubism 2 core (for old .moc models like wanko) -->
+  <script src="/live2d/live2d.min.js"></script>
+  <!-- Cubism 4 core (for .moc3 models like Mao, Hiyori) -->
   <script src="/live2d/live2dcubismcore.min.js"></script>
+  <!-- PixiJS -->
   <script src="/live2d/pixi.min.js"></script>
-  <script src="/live2d/cubism4.min.js"></script>
+  <!-- pixi-live2d-display (supports both Cubism 2 and 4) -->
+  <script src="/live2d/pixi-live2d-display.min.js"></script>
 
   <script>
     const PIXI_L2D = PIXI.live2d;
 
+    // Model configs: name -> { file, lipSyncParam, type }
+    // type: 'cubism4' uses .model3.json, 'cubism2' uses .model.json
+    const MODEL_CONFIGS = {
+      'Mao':    { file: '/live2d/Mao/Mao.model3.json',       lipSyncParam: 'ParamA',        type: 'cubism4' },
+      'Hiyori': { file: '/live2d/Hiyori/Hiyori.model3.json', lipSyncParam: 'ParamMouthOpenY', type: 'cubism4' },
+      'Rice':   { file: '/live2d/Rice/Rice.model3.json',      lipSyncParam: 'ParamMouthOpenY', type: 'cubism4' },
+      'wanko':  { file: '/live2d/wanko/wanko.model.json',     lipSyncParam: 'PARAM_MOUTH_OPEN_Y', type: 'cubism2' },
+    };
+
     let app, model;
     let lipSyncValue = 0;
     let targetLipSync = 0;
+    let currentConfig = null;
 
     async function init() {
       const canvas = document.getElementById('live2d-canvas');
 
       app = new PIXI.Application({
         view: canvas,
-        width: 640,
-        height: 480,
+        width: 320,
+        height: 240,
         backgroundColor: 0x1a1a2e,
         autoStart: true,
         antialias: true,
+        preserveDrawingBuffer: true,  // Required for toDataURL() to work
       });
 
-      // Get model name from URL params or default to Mao
       const params = new URLSearchParams(window.location.search);
-      const modelName = params.get('model') || 'Mao';
+      const modelName = params.get('model') || 'wanko';
+
+      currentConfig = MODEL_CONFIGS[modelName];
+
+      if (!currentConfig) {
+        // Auto-detect: if model dir has .model3.json assume cubism4, else cubism2
+        const isCubism4 = modelName.charAt(0) === modelName.charAt(0).toUpperCase(); // heuristic
+        currentConfig = {
+          file: isCubism4
+            ? `/live2d/${modelName}/${modelName}.model3.json`
+            : `/live2d/${modelName}/${modelName}.model.json`,
+          lipSyncParam: isCubism4 ? 'ParamA' : 'PARAM_MOUTH_OPEN_Y',
+          type: isCubism4 ? 'cubism4' : 'cubism2',
+        };
+      }
 
       try {
-        model = await PIXI_L2D.Live2DModel.from(
-          `/live2d/${modelName}/${modelName}.model3.json`,
-          { autoInteract: false }
-        );
+        console.log('[Live2D] Loading model:', modelName, 'type:', currentConfig.type);
+
+        model = await PIXI_L2D.Live2DModel.from(currentConfig.file, {
+          autoInteract: false,
+        });
 
         // Scale and position
-        const scale = Math.min(480 / model.height, 640 / model.width) * 1.8;
-        model.scale.set(scale);
-        model.anchor.set(0.5, 0.5);
-        model.x = 320;
-        model.y = 300;
+        console.log('[Live2D] Model dimensions:', model.width, 'x', model.height);
+        let scale;
+        if (currentConfig.type === 'cubism2') {
+          // Cubism 2: center model in canvas
+          // Cubism 2: model origin is top-left, no anchor support
+          scale = Math.min(320 / model.width, 240 / model.height);
+          model.scale.set(scale);
+          // Center: canvas center minus half scaled model
+          model.x = (320 - model.width * scale) / 2;
+          model.y = (240 - model.height * scale) / 2;
+          console.log('[Live2D] Cubism2 pos: x=' + model.x + ' y=' + model.y + ' scale=' + scale + ' modelW=' + (model.width*scale) + ' modelH=' + (model.height*scale));
+        } else {
+          scale = Math.min(240 / model.height, 320 / model.width) * 1.8;
+          model.scale.set(scale);
+          model.anchor.set(0.5, 0.5);
+          model.x = 160;
+          model.y = 150;
+        }
+        console.log('[Live2D] Scale:', scale, 'Position:', model.x, model.y);
 
         app.stage.addChild(model);
 
         // Start idle motion
-        model.motion('Idle', 0, PIXI_L2D.MotionPriority.IDLE);
+        const idleGroup = currentConfig.type === 'cubism2' ? 'idle' : 'Idle';
+        try {
+          model.motion(idleGroup, 0, PIXI_L2D.MotionPriority.IDLE);
+        } catch (e) {
+          console.log('[Live2D] No idle motion, skipping');
+        }
 
         // Lip sync ticker
         app.ticker.add(() => {
           if (model?.internalModel) {
-            // Smooth lip sync
             lipSyncValue += (targetLipSync - lipSyncValue) * 0.3;
             const coreModel = model.internalModel.coreModel;
-            const paramIndex = coreModel.getParameterIndex('ParamA');
-            if (paramIndex >= 0) {
-              coreModel.setParameterValueByIndex(paramIndex, lipSyncValue);
+
+            if (currentConfig.type === 'cubism4') {
+              const paramIndex = coreModel.getParameterIndex(currentConfig.lipSyncParam);
+              if (paramIndex >= 0) {
+                coreModel.setParameterValueByIndex(paramIndex, lipSyncValue);
+              }
+            } else {
+              // Cubism 2 uses setParamFloat
+              try {
+                coreModel.setParamFloat(currentConfig.lipSyncParam, lipSyncValue);
+              } catch (e) {
+                // Some cubism2 models may not have this param
+              }
             }
           }
         });
 
         console.log('[Live2D] Model loaded:', modelName);
 
-        // Expose stream for capture
         window._live2dStream = canvas.captureStream(30);
         window._live2dReady = true;
 
@@ -82,6 +139,8 @@
 
     // Control API exposed to Puppeteer
     window.setLipSync = (value) => { targetLipSync = Math.max(0, Math.min(1, value)); };
+    window.startLipSync = () => { targetLipSync = 0.8; };
+    window.stopLipSync = () => { targetLipSync = 0; };
     window.setExpression = (name) => { if (model) model.expression(name); };
     window.playMotion = (group, index) => { if (model) model.motion(group, index); };
     window.isLive2DReady = () => !!window._live2dReady;
