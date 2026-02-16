@@ -100,7 +100,20 @@ class Transcriber extends EventEmitter {
     try {
       // Build WAV header
       const wavBuffer = this._pcmToWav(audioBuffer, this.SAMPLE_RATE, 1, 16);
-      const result = await this._sendToWhisper(wavBuffer);
+
+      // Run Whisper + Speaker ID in parallel
+      const whisperPromise = this._sendToWhisper(wavBuffer);
+      const speakerPromise = this.speakerIdEnabled
+        ? this._identifySpeaker(wavBuffer).catch(err => {
+            if (!this._speakerWarnLogged) {
+              console.warn(LOG, `Speaker ID unavailable: ${err.message}`);
+              this._speakerWarnLogged = true;
+            }
+            return null;
+          })
+        : Promise.resolve(null);
+
+      const [result, speaker] = await Promise.all([whisperPromise, speakerPromise]);
 
       if (!result || !result.text) return;
 
@@ -122,20 +135,6 @@ class Transcriber extends EventEmitter {
       this.lastTranscript = text;
 
       const lang = result.language || null;
-
-      // Speaker identification — send audio chunk to speaker service
-      let speaker = null;
-      if (this.speakerIdEnabled) {
-        try {
-          speaker = await this._identifySpeaker(wavBuffer);
-        } catch (err) {
-          // Non-fatal — continue without speaker ID
-          if (!this._speakerWarnLogged) {
-            console.warn(LOG, `Speaker ID unavailable: ${err.message}`);
-            this._speakerWarnLogged = true;
-          }
-        }
-      }
 
       console.log(LOG, `Transcript [${lang || '?'}] [${speaker || '?'}]: "${text}"`);
       this.emit('transcript', {
