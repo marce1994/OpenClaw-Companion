@@ -252,7 +252,7 @@ class AIResponder extends EventEmitter {
     if (this.processing) return;
     this.processing = true;
 
-    const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || '?'}]: ${t.text}`).join('\n');
+    const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || 'Unknown'}]: ${t.text}`).join('\n');
 
     const nameHint = nameMentioned
       ? `Your name ("${config.botName}") was mentioned, but they might be talking ABOUT you, not TO you. Only respond if they're clearly addressing you or asking you something directly. `
