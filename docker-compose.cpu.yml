@@ -1,0 +1,54 @@
+###############################################################################
+# CPU-only override — no GPU required
+#
+#   docker compose -f docker-compose.cpu.yml up -d
+###############################################################################
+
+services:
+  voice-server:
+    build: ./server
+    container_name: openclaw-voice-server
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN:?Set AUTH_TOKEN in .env}
+      - WHISPER_URL=${WHISPER_URL:-http://127.0.0.1:9000/v1/audio/transcriptions}
+      - WHISPER_MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - KOKORO_URL=${KOKORO_URL:-http://127.0.0.1:5004}
+      - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
+      - TTS_ENGINE=${TTS_ENGINE:-edge}
+      - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
+      - BOT_NAME=${BOT_NAME:-jarvis}
+      - OWNER_NAME=${OWNER_NAME:-User}
+      - GATEWAY_WS_URL=${GATEWAY_WS_URL:-ws://127.0.0.1:18789}
+      - GATEWAY_TOKEN=${GATEWAY_TOKEN:?Set GATEWAY_TOKEN in .env}
+      - USE_GATEWAY_WS=${USE_GATEWAY_WS:-true}
+      - GW_SESSION_KEY=${GW_SESSION_KEY:-voice}
+      - PORT=${PORT:-3200}
+    volumes:
+      - speaker-profiles:/data/speakers
+    depends_on:
+      speaches-stt:
+        condition: service_started
+
+  speaches-stt:
+    image: ghcr.io/speaches-ai/speaches:latest
+    container_name: openclaw-stt
+    restart: unless-stopped
+    ports:
+      - "${STT_PORT:-9000}:8000"
+    environment:
+      - WHISPER__MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - UVICORN__HOST=0.0.0.0
+    volumes:
+      - ./.cache:/home/ubuntu/.cache/huggingface
+
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi:latest-cpu
+    container_name: openclaw-kokoro
+    restart: unless-stopped
+    ports:
+      - "${KOKORO_PORT:-5004}:8880"
+
+volumes:
+  speaker-profiles:
