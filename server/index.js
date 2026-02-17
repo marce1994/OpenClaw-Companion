@@ -376,7 +376,7 @@ async function generateTTS_Kokoro(text) {
         const resp = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'kokoro', input: text, voice: KOKORO_VOICE, response_format: 'wav', speed: 1.0 }),
+          body: JSON.stringify({ model: 'kokoro', input: text, voice: KOKORO_VOICE, response_format: 'mp3', speed: 1.0 }),
           signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) throw new Error(`Kokoro-FastAPI HTTP ${resp.status}`);

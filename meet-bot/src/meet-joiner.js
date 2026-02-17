@@ -460,12 +460,28 @@ class MeetJoiner extends EventEmitter {
         const controls = document.querySelector('[data-call-ended]');
         if (controls) return 'ended';
         
+        // Multiple signals that we're in the meeting
         const meetUI = document.querySelector(
           '[aria-label*="people" i], [aria-label*="participant" i], ' +
           '[aria-label*="chat" i], [data-tooltip*="chat" i], ' +
-          '[aria-label*="personas" i]'
+          '[aria-label*="personas" i], ' +
+          // Updated Meet UI selectors (2026)
+          '[data-panel-id], ' +
+          '[aria-label*="more options" i], [aria-label*="más opciones" i], ' +
+          '[aria-label*="meeting details" i], [aria-label*="detalles" i], ' +
+          '[aria-label*="activities" i], [aria-label*="actividades" i]'
         );
-        return meetUI ? 'in-meeting' : 'waiting';
+        // Also check: "Please wait" text disappearing = admitted
+        const bodyText = document.body.innerText.toLowerCase();
+        const stillWaiting = bodyText.includes('please wait') || bodyText.includes('espera a que');
+        if (meetUI && !stillWaiting) return 'in-meeting';
+        // If "please wait" is gone but no meetUI found, also consider admitted
+        if (!stillWaiting && !bodyText.includes('ask to join') && !bodyText.includes('pedir unirse')) {
+          // Check for bottom toolbar (reliable indicator of being in-meeting)
+          const toolbar = document.querySelector('[jscontroller][jsaction*="click"]');
+          if (toolbar) return 'in-meeting';
+        }
+        return 'waiting';
       });
 
       if (status === 'in-meeting') return;

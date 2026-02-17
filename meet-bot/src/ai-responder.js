@@ -26,6 +26,9 @@ class AIResponder extends EventEmitter {
     this.detectedLang = config.defaultLang || 'es'; // Current meeting language
     this.lastResponseTime = 0; // Cooldown tracking
     this.responseCooldownMs = 10000; // 10s cooldown after each response
+    this.audioQueue = []; // FIFO queue for sequential audio playback
+    this.playingAudio = false; // Mutex for audio injection
+    this.speaking = false; // True while TTS is playing
   }
 
   setMeetingId(id) { this.meetingId = id; }
@@ -226,16 +229,17 @@ class AIResponder extends EventEmitter {
 
     const isSummary = /\b(resumen|summary|resumir)\b/i.test(text);
     // Match bot name + common Whisper mis-transcriptions
-    const nameVariants = [botName, 'jervis', 'jarves', 'jarvis', 'shervis', 'charvis', 'jarviz', 'jarbi', 'jarby', 'yarvis', 'xervis', 'charbis', 'jarbis', 'chervis', 'gervis', 'harvis'];
+    const nameVariants = [botName, 'jervis', 'jarves', 'jarvis', 'shervis', 'charvis', 'jarviz', 'jarbi', 'jarby', 'yarvis', 'xervis', 'charbis', 'jarbis', 'chervis', 'gervis', 'harvis', 'charbi'];
     const nameMentioned = nameVariants.some(v => text.includes(v));
 
     // Cooldown check
     const now = Date.now();
     const inCooldown = (now - this.lastResponseTime) < this.responseCooldownMs;
 
-    console.log(LOG, `Transcript: "${text.substring(0,60)}" name=${nameMentioned} processing=${this.processing} cooldown=${inCooldown}`);
+    console.log(LOG, `Transcript: "${text.substring(0,60)}" name=${nameMentioned} processing=${this.processing} cooldown=${inCooldown} speaking=${this.speaking}`);
 
     if (this.processing || !this.connected) return;
+    if (this.speaking && !nameMentioned) return; // Don't process while Jarvis is talking (echo)
     if (inCooldown && !nameMentioned) return; // Skip proactive during cooldown, but allow name mentions
 
     if (isSummary) {
@@ -256,17 +260,23 @@ class AIResponder extends EventEmitter {
       ? `Your name ("${config.botName}") was mentioned, but they might be talking ABOUT you, not TO you. Only respond if they're clearly addressing you or asking you something directly. `
       : '';
 
+    const speakerRenameInstruction = `\nIf someone introduces themselves or you learn a speaker's name (e.g. "call me X", "that was Luke", "I'm Pablo"), include [RENAME:CurrentID:RealName] at the END of your response. Example: "Nice to meet you! [RENAME:Speaker_1:Luke]". Only use this when you're confident about the name.`;
+
+    const backgroundContext = `\nBackground context: You are Jarvis, AI assistant for Pablo Bianco. Pablo is a full-stack developer based in Argentina (General Belgrano, Buenos Aires). He runs Digital Village (digitalvillage.com.au, digitalvillage.network). His wife Damaris runs Piel de Porcelana (Korean skincare). You run on a Dell XPS 15 with an RTX 3090 eGPU. You were built using OpenClaw. You know about Pablo's projects, infrastructure, and work context.`;
+
     const langInstruction = this.detectedLang === 'en'
       ? `You are in a Google Meet call as ${config.botName}. You hear the conversation. `
         + nameHint
         + `Only respond if you can add real value (answer a question, provide info, give an opinion when asked). `
         + `Keep it concise (1-3 sentences, it will be read aloud). Reply in English.\n`
         + `If the conversation doesn't need you, reply EXACTLY "SKIP" and nothing else.`
+        + speakerRenameInstruction + backgroundContext
       : `Estás en una reunión de Google Meet como ${config.botName}. Escuchás la conversación. `
         + nameHint
         + `Solo respondé si podés aportar algo útil (responder una pregunta, dar info, opinar cuando te preguntan). `
         + `Sé conciso (1-3 oraciones, se va a leer en voz alta). Respondé en español.\n`
-        + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP" y nada más.`;
+        + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP" y nada más.`
+        + speakerRenameInstruction + backgroundContext;
 
     const prompt = `${langInstruction}\n\nContexto reciente:\n${context}\n\nÚltimo: "${transcriptText}"`;
 
@@ -348,25 +358,76 @@ ${transcript}`;
         return;
       }
       this.lastResponseTime = Date.now(); // Start cooldown
-      const audioBuffer = await this._getTTS(text);
-      if (audioBuffer?.length > 0) {
-        // Start lip sync animation
-        this.emit('speaking-start');
-        await this.audioPipeline.injectAudio(audioBuffer, 'wav');
-        this.emit('speaking-end');
-        console.log(LOG, 'Audio injected into meeting');
+
+      // Extract and process [RENAME:OldName:NewName] tags
+      const renamePattern = /\[RENAME:([^\]:]+):([^\]]+)\]/g;
+      let renameMatch;
+      while ((renameMatch = renamePattern.exec(text)) !== null) {
+        const [, oldName, newName] = renameMatch;
+        console.log(LOG, `AI rename: "${oldName}" → "${newName}"`);
+        this._renameSpeaker(oldName.trim(), newName.trim());
+      }
+      // Strip rename tags from spoken text
+      const spokenText = text.replace(/\s*\[RENAME:[^\]]+\]/g, '').trim();
+      if (!spokenText) {
+        this.processing = false;
+        return;
       }
 
-      this.memory.addEntry({
-        text,
-        timestamp: Date.now(),
-        speaker: config.botName,
-      });
-
-      this.emit('response', { text });
+      const audioBuffer = await this._getTTS(spokenText);
+      if (audioBuffer?.length > 0) {
+        this.audioQueue.push({ audio: audioBuffer, text: spokenText });
+        this._drainQueue();
+      } else {
+        this.memory.addEntry({ text: spokenText, timestamp: Date.now(), speaker: config.botName });
+        this.emit('response', { text: spokenText });
+      }
     } catch (err) {
       console.error(LOG, 'Failed to handle response:', err.message);
     }
+  }
+
+  async _drainQueue() {
+    if (this.playingAudio) return; // Already draining
+    this.playingAudio = true;
+
+    while (this.audioQueue.length > 0) {
+      const { audio, text } = this.audioQueue.shift();
+      try {
+        this.speaking = true;
+        this.emit('speaking-start');
+        await this.audioPipeline.injectAudio(audio, 'wav');
+        this.emit('speaking-end');
+        this.speaking = false;
+        console.log(LOG, 'Audio played from queue');
+
+        this.memory.addEntry({ text, timestamp: Date.now(), speaker: config.botName });
+        this.emit('response', { text });
+      } catch (err) {
+        console.error(LOG, 'Audio playback error:', err.message);
+        this.speaking = false;
+        this.emit('speaking-end');
+      }
+    }
+
+    this.playingAudio = false;
+  }
+
+  _renameSpeaker(oldName, newName) {
+    const speakerUrl = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
+    const url = new URL(speakerUrl + '/rename');
+    const req = http.request({
+      hostname: url.hostname, port: url.port, path: url.pathname,
+      method: 'POST',
+      headers: { 'X-Old-Name': oldName, 'X-New-Name': newName },
+      timeout: 3000,
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => console.log(LOG, `Speaker renamed: ${data}`));
+    });
+    req.on('error', (e) => console.warn(LOG, `Rename failed: ${e.message}`));
+    req.end();
   }
 
   async _getTTS(text) {

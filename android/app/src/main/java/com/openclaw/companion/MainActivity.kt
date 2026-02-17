@@ -1966,7 +1966,9 @@ class MainActivity : Activity() {
                 updateCancelButtonVisibility()
             }
 
-            val tmpFile = File(cacheDir, "response.mp3")
+            // Detect format from header: WAV starts with "RIFF", MP3 with 0xFF or "ID3"
+            val ext = if (audioBytes.size > 4 && audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte()) ".wav" else ".mp3"
+            val tmpFile = File(cacheDir, "response$ext")
             FileOutputStream(tmpFile).use { it.write(audioBytes) }
 
             mediaPlayer?.release()

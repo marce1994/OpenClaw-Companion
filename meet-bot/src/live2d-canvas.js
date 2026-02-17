@@ -42,13 +42,37 @@ class Live2DCanvas {
       ctx.fillStyle = '#1a1a2e';
       ctx.fillRect(0, 0, 640, 360);
       window.__avatarCanvas = avatarCanvas;
-      // captureStream(0) = manual frame control via requestFrame()
-      window.__avatarStream = avatarCanvas.captureStream(0);
+      // Use captureStream(30) to keep frames flowing even before Live2D loads
+      // captureStream(0) caused Meet to disable camera (no frames = black stream)
+      window.__avatarStream = avatarCanvas.captureStream(30);
       window.__avatarTrack = window.__avatarStream.getVideoTracks()[0];
       window.__avatarWriter = null;
       window.__avatarReady = false;
       window.__meetPeerConnections = [];
-      console.log('[Live2D-Override] Avatar canvas 640x360 + captureStream(0) created');
+      
+      // Render animated placeholder so Meet sees active video before Live2D loads
+      let placeholderFrame = 0;
+      window.__placeholderInterval = setInterval(() => {
+        if (window.__avatarReady) {
+          clearInterval(window.__placeholderInterval);
+          return;
+        }
+        placeholderFrame++;
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, 640, 360);
+        // Pulsing dot to show "loading"
+        const pulse = (Math.sin(placeholderFrame * 0.1) + 1) / 2;
+        const radius = 8 + pulse * 12;
+        ctx.beginPath();
+        ctx.arc(320, 180, radius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(100, 149, 237, ${0.3 + pulse * 0.7})`;
+        ctx.fill();
+        ctx.font = '16px Arial';
+        ctx.fillStyle = '#ffffff80';
+        ctx.textAlign = 'center';
+        ctx.fillText('Loading avatar...', 320, 230);
+      }, 33); // ~30fps
+      console.log('[Live2D-Override] Avatar canvas 640x360 + captureStream(30) created');
 
       // Override getUserMedia
       const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
@@ -122,6 +146,7 @@ class Live2DCanvas {
    * After Meet has joined, inject Live2D renderer directly into the Meet page.
    */
   async injectIntoMeet(meetPage) {
+    this.meetPage = meetPage;
     console.log(LOG, 'Injecting Live2D renderer into Meet page...');
 
     try {
@@ -324,6 +349,19 @@ class Live2DCanvas {
             window.__jarvisStatus = 'idle';
             window.__setJarvisStatus = function(s) { window.__jarvisStatus = s || 'idle'; };
             
+            // Debug info
+            window.__jarvisDebug = {
+              lastTranscript: '',
+              lastSpeaker: '',
+              lastResponse: '',
+              lang: 'es',
+              transcriptCount: 0,
+              responseCount: 0,
+            };
+            window.__setJarvisDebug = function(key, val) {
+              if (window.__jarvisDebug) window.__jarvisDebug[key] = val;
+            };
+            
             // Lip sync — oscillate mouth open/close while speaking
             window.__jarvisSpeaking = false;
             let lipFrame = 0;
@@ -376,41 +414,96 @@ class Live2DCanvas {
                   // Draw Live2D output
                   avatarCtx.drawImage(canvas, 0, 0, 640, 360);
                   
-                  // Draw status overlay on the canvas itself
+                  // Draw HUD overlay
+                  avatarCtx.save();
+                  const dbg = window.__jarvisDebug || {};
                   const status = window.__jarvisStatus;
-                  if (status && status !== 'idle' && statusIcons[status]) {
-                    avatarCtx.save();
-                    avatarCtx.font = '16px Arial, sans-serif';
-                    const text = statusIcons[status];
-                    const tw = avatarCtx.measureText(text).width;
-                    const px = (640 - tw) / 2 - 12;
-                    const py = 335;
-                    // Background pill
-                    avatarCtx.fillStyle = 'rgba(0,0,0,0.55)';
-                    // Rounded rect fallback (roundRect may not exist)
-                    const rw = tw + 24, rh = 26, rx = px, ry = py - 16, r = 13;
-                    avatarCtx.beginPath();
-                    avatarCtx.moveTo(rx + r, ry);
-                    avatarCtx.lineTo(rx + rw - r, ry);
-                    avatarCtx.arcTo(rx + rw, ry, rx + rw, ry + r, r);
-                    avatarCtx.lineTo(rx + rw, ry + rh - r);
-                    avatarCtx.arcTo(rx + rw, ry + rh, rx + rw - r, ry + rh, r);
-                    avatarCtx.lineTo(rx + r, ry + rh);
-                    avatarCtx.arcTo(rx, ry + rh, rx, ry + rh - r, r);
-                    avatarCtx.lineTo(rx, ry + r);
-                    avatarCtx.arcTo(rx, ry, rx + r, ry, r);
-                    avatarCtx.closePath();
-                    avatarCtx.fill();
-                    // Text
-                    avatarCtx.fillStyle = '#ffffff';
-                    avatarCtx.fillText(text, px + 12, py + 4);
-                    avatarCtx.restore();
+                  
+                  // Top-left: status badge
+                  const statusColors = {
+                    'idle': '#4a5568',
+                    'listening': '#48bb78',
+                    'thinking': '#ed8936',
+                    'speaking': '#4299e1',
+                    'transcribing': '#9f7aea',
+                  };
+                  const statusText = statusIcons[status] || '💤 Idle';
+                  const statusColor = statusColors[status] || '#4a5568';
+                  
+                  // Status pill top-left (inset from edges)
+                  avatarCtx.font = 'bold 12px Arial, sans-serif';
+                  const stw = avatarCtx.measureText(statusText).width;
+                  avatarCtx.fillStyle = statusColor + 'cc';
+                  avatarCtx.beginPath();
+                  const spx = 50, spy = 40, srw = stw + 16, srh = 22, sr = 11;
+                  avatarCtx.moveTo(spx + sr, spy);
+                  avatarCtx.lineTo(spx + srw - sr, spy);
+                  avatarCtx.arcTo(spx + srw, spy, spx + srw, spy + sr, sr);
+                  avatarCtx.lineTo(spx + srw, spy + srh - sr);
+                  avatarCtx.arcTo(spx + srw, spy + srh, spx + srw - sr, spy + srh, sr);
+                  avatarCtx.lineTo(spx + sr, spy + srh);
+                  avatarCtx.arcTo(spx, spy + srh, spx, spy + srh - sr, sr);
+                  avatarCtx.lineTo(spx, spy + sr);
+                  avatarCtx.arcTo(spx, spy, spx + sr, spy, sr);
+                  avatarCtx.closePath();
+                  avatarCtx.fill();
+                  avatarCtx.fillStyle = '#ffffff';
+                  avatarCtx.fillText(statusText, spx + 8, spy + 15);
+                  
+                  // Top-right: lang + stats
+                  avatarCtx.font = '11px Arial, sans-serif';
+                  avatarCtx.textAlign = 'right';
+                  avatarCtx.fillStyle = 'rgba(255,255,255,0.7)';
+                  const langFlag = (dbg.lang === 'en') ? '🇬🇧' : '🇦🇷';
+                  avatarCtx.fillText(langFlag + ' ' + (dbg.lang || '?').toUpperCase() + '  📝' + (dbg.transcriptCount || 0) + '  💬' + (dbg.responseCount || 0), 590, 52);
+                  
+                  // Bottom: last transcript (who said what)
+                  if (dbg.lastTranscript) {
+                    avatarCtx.textAlign = 'left';
+                    avatarCtx.font = '11px Arial, sans-serif';
+                    // Background bar
+                    avatarCtx.fillStyle = 'rgba(0,0,0,0.6)';
+                    avatarCtx.fillRect(50, 275, 540, 50);
+                    // Speaker name
+                    avatarCtx.fillStyle = '#48bb78';
+                    const speaker = dbg.lastSpeaker || '?';
+                    avatarCtx.fillText(speaker + ':', 58, 290);
+                    // Transcript text (truncate)
+                    avatarCtx.fillStyle = '#e2e8f0';
+                    const maxW = 520 - avatarCtx.measureText(speaker + ': ').width;
+                    let tText = dbg.lastTranscript;
+                    if (avatarCtx.measureText(tText).width > maxW) {
+                      while (avatarCtx.measureText(tText + '...').width > maxW && tText.length > 0) tText = tText.slice(0, -1);
+                      tText += '...';
+                    }
+                    avatarCtx.fillText(tText, 58 + avatarCtx.measureText(speaker + ': ').width, 290);
+                    
+                    // Last AI response
+                    if (dbg.lastResponse) {
+                      avatarCtx.fillStyle = '#63b3ed';
+                      avatarCtx.fillText('🤖 ', 58, 310);
+                      avatarCtx.fillStyle = '#bee3f8';
+                      let rText = dbg.lastResponse;
+                      if (avatarCtx.measureText(rText).width > 510) {
+                        while (avatarCtx.measureText(rText + '...').width > 510 && rText.length > 0) rText = rText.slice(0, -1);
+                        rText += '...';
+                      }
+                      avatarCtx.fillText(rText, 74, 310);
+                    }
                   }
                   
-                  // Signal new frame
-                  if (videoTrack && videoTrack.requestFrame) {
-                    videoTrack.requestFrame();
-                  }
+                  // FPS counter
+                  const elapsed = (performance.now() - startTime) / 1000;
+                  const fps = Math.round(frameCount / elapsed);
+                  avatarCtx.textAlign = 'right';
+                  avatarCtx.font = '10px monospace';
+                  avatarCtx.fillStyle = 'rgba(255,255,255,0.4)';
+                  avatarCtx.fillText(fps + 'fps', 590, 310);
+                  
+                  avatarCtx.restore();
+                  
+                  // With captureStream(30), frames are auto-captured at 30fps
+                  // No need for manual requestFrame()
                 }
                 
                 frameCount++;
@@ -477,6 +570,15 @@ class Live2DCanvas {
       await this.meetPage.evaluate((s) => {
         if (window.__setJarvisStatus) window.__setJarvisStatus(s);
       }, status);
+    } catch(e) {}
+  }
+
+  async setDebug(key, value) {
+    if (!this.meetPage) return;
+    try {
+      await this.meetPage.evaluate((k, v) => {
+        if (window.__setJarvisDebug) window.__setJarvisDebug(k, v);
+      }, key, value);
     } catch(e) {}
   }
 
