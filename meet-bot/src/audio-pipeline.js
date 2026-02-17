@@ -85,33 +85,20 @@ class AudioPipeline extends EventEmitter {
       console.log(LOG, `Injecting ${(audioBuffer.length / 1024).toFixed(1)}KB audio (${format})...`);
 
       if (format === 'wav') {
-        // Convert through ffmpeg first to ensure compatible WAV format for PulseAudio
-        const tmpIn = `/tmp/tts_in_${Date.now()}.wav`;
-        const tmpOut = `/tmp/tts_out_${Date.now()}.wav`;
-        writeFileSync(tmpIn, audioBuffer);
+        // Play WAV directly with paplay — no ffmpeg needed
+        // Kokoro outputs 24kHz mono WAV, paplay handles resampling natively
+        const tmpFile = `/tmp/tts_${Date.now()}.wav`;
+        writeFileSync(tmpFile, audioBuffer);
 
-        const ffmpeg = spawn('ffmpeg', [
-          '-y', '-i', tmpIn,
-          '-ar', '48000', '-ac', '1', '-f', 'wav', tmpOut,
-        ], { stdio: ['ignore', 'ignore', 'ignore'] });
-
-        ffmpeg.on('close', (ffCode) => {
-          try { unlinkSync(tmpIn); } catch (e) {}
-          if (ffCode !== 0) {
-            try { unlinkSync(tmpOut); } catch (e) {}
-            return reject(new Error(`ffmpeg conversion failed: code ${ffCode}`));
-          }
-
-          const proc = spawn('paplay', ['--device=tts_output', tmpOut]);
-          proc.on('close', (code) => {
-            try { unlinkSync(tmpOut); } catch (e) {}
-            if (code === 0) resolve();
-            else reject(new Error(`paplay exited with code ${code}`));
-          });
-          proc.on('error', (err) => {
-            try { unlinkSync(tmpOut); } catch (e) {}
-            reject(err);
-          });
+        const proc = spawn('paplay', ['--device=tts_output', tmpFile]);
+        proc.on('close', (code) => {
+          try { unlinkSync(tmpFile); } catch (e) {}
+          if (code === 0) resolve();
+          else reject(new Error(`paplay exited with code ${code}`));
+        });
+        proc.on('error', (err) => {
+          try { unlinkSync(tmpFile); } catch (e) {}
+          reject(err);
         });
       } else {
         // Raw PCM — pipe through ffmpeg to convert to WAV then paplay
