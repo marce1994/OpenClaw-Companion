@@ -396,7 +396,7 @@ ${transcript}`;
       try {
         this.speaking = true;
         this.emit('speaking-start');
-        await this.audioPipeline.injectAudio(audio, 'wav');
+        await this.audioPipeline.injectAudio(audio, 'pcm');
         this.emit('speaking-end');
         this.speaking = false;
         console.log(LOG, 'Audio played from queue');
@@ -451,7 +451,7 @@ ${transcript}`;
       const url = new URL(config.kokoroUrl);
       const voice = this.detectedLang === 'en' ? config.kokoroVoiceEn : config.kokoroVoice;
       // Try OpenAI-compatible API first (Kokoro-FastAPI)
-      const body = JSON.stringify({ model: 'kokoro', input: text, voice, response_format: 'wav', speed: 1.0 });
+      const body = JSON.stringify({ model: 'kokoro', input: text, voice, response_format: 'pcm', speed: 1.0 });
       const req = http.request({
         hostname: url.hostname, port: url.port,
         path: '/v1/audio/speech', method: 'POST',
