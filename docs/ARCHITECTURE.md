@@ -38,19 +38,27 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 │         │         │            │                        │                    │
 │         ▼         ▼            ▼                        │                    │
 │  ┌──────────┐ ┌─────────┐ ┌──────────────┐             │                    │
-│  │ Speaker  │ │ Whisper │ │ TTS Engine   │◄────────────┘                    │
-│  │ ID :3201 │ │ ASR     │ │ Kokoro :5004 │ (shared by meet bot)            │
-│  │ +Search  │ │ :9000   │ │ XTTS   :5002 │                                 │
-│  └──────────┘ └─────────┘ │ Edge (cloud) │                                 │
-│                           └──────────────┘                                  │
+│  │ Speaker  │ │Speaches │ │ TTS Engine   │◄────────────┘                    │
+│  │ ID :3201 │ │ STT     │ │ Kokoro :5004 │ (shared by meet bot)            │
+│  │ +Search  │ │ :9000   │ │ Edge (cloud) │                                 │
+│  └──────────┘ └─────────┘ └──────────────┘                                  │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  OpenClaw Gateway (:18789)                                           │    │
-│  │  HTTP: /v1/chat/completions | WS: native protocol v3                 │    │
-│  │  → LLM (Claude, GPT, Gemini, local models via Ollama, etc.)         │    │
+│  │  OpenClaw Gateway                                                    │    │
+│  │  WS: native protocol | → LLM (Claude, GPT, Gemini, Ollama, etc.)    │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Docker Compose Services
+
+| Service | Container | Image | Ports | GPU | Notes |
+|---------|-----------|-------|-------|-----|-------|
+| `voice-server` | Build `./server` | — | 3200 (host network) | No | Node.js + Python (speaker ID on :3201) |
+| `speaches-stt` | `ghcr.io/speaches-ai/speaches` | latest-cuda / latest | 9000→8000 | Yes (optional) | faster-whisper, OpenAI-compatible API |
+| `kokoro-tts` | `ghcr.io/remsky/kokoro-fastapi` | latest-gpu / latest-cpu | 5004→8880 | Yes (optional) | ~330ms latency, OpenAI-compatible |
+| `meet-bot` | Build `./meet-bot` | — | 3300 (host network) | No | Profile: `meet` |
+| `diarizer` | Build `./diarizer` | — | 3202 | Yes | Profile: `diarizer` |
 
 ## Component Details
 

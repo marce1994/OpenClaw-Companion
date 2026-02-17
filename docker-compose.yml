@@ -1,76 +1,66 @@
 ###############################################################################
 # OpenClaw Companion — Docker Compose
 #
-# Quick start (Edge TTS, CPU Whisper):
+# Quick start:
 #   cp .env.example .env   # edit with your values
-#   docker compose up -d
+#   ./setup.sh             # or manually: docker compose up -d
 #
-# GPU Whisper (much faster):
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-#
-# With Kokoro TTS (local GPU, ~400ms, no voice cloning):
-#   Set TTS_ENGINE=kokoro in .env
-#   docker compose --profile kokoro up -d
-#
-# With XTTS v2 (local GPU, voice cloning, ~1s):
-#   Set TTS_ENGINE=xtts in .env
-#   docker compose --profile xtts up -d
+# GPU mode (set in .env: STT_TAG=latest-cuda, KOKORO_TAG=latest-gpu)
+# Meet bot: docker compose --profile meet up -d
+# Diarizer: docker compose --profile diarizer up -d
 ###############################################################################
 
 services:
-  # ─── Voice Server (WebSocket bridge) ──────────────────────────────────────
+  # ─── Voice Server ──────────────────────────────────────────────────────────
+  # Core service: bridges Android/Web app ↔ OpenClaw Gateway
+  # Handles STT routing, TTS streaming, speaker identification
   voice-server:
     build: ./server
-    container_name: openclaw-companion-server
+    container_name: openclaw-voice-server
     restart: unless-stopped
-    ports:
-      - "${PORT:-3200}:3200"
+    network_mode: host
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-change-me}
-      - WHISPER_URL=http://speaches-stt:8000/v1/audio/transcriptions
-      - WHISPER_MODEL=${ASR_MODEL:-Systran/faster-whisper-large-v3-turbo}
-      - GATEWAY_URL=${GATEWAY_URL:?Set GATEWAY_URL to your OpenClaw chat completions endpoint}
-      - GATEWAY_TOKEN=${GATEWAY_TOKEN:?Set GATEWAY_TOKEN to your OpenClaw gateway token}
+      - WHISPER_URL=http://127.0.0.1:${STT_PORT:-9000}/v1/audio/transcriptions
+      - WHISPER_MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
       - TTS_ENGINE=${TTS_ENGINE:-edge}
       - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
       - BOT_NAME=${BOT_NAME:-assistant}
       - OWNER_NAME=${OWNER_NAME:-User}
-      - KOKORO_URL=${KOKORO_URL:-http://kokoro-tts:8080}
+      - KOKORO_URL=http://127.0.0.1:${KOKORO_PORT:-5004}
       - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
-      - XTTS_URL=${XTTS_URL:-http://xtts-server:80}
+      - XTTS_URL=http://127.0.0.1:${XTTS_PORT:-5002}
+      - GATEWAY_WS_URL=${GATEWAY_WS_URL:-ws://127.0.0.1:18789}
+      - GATEWAY_TOKEN=${GATEWAY_TOKEN:?Set GATEWAY_TOKEN in .env}
+      - USE_GATEWAY_WS=${USE_GATEWAY_WS:-true}
+      - GW_SESSION_KEY=${VOICE_SESSION_KEY:-voice}
+      - PORT=${VOICE_PORT:-3200}
+      - WSS_PORT=${WSS_PORT:-3443}
+      - TLS_CERT=${TLS_CERT:-}
+      - TLS_KEY=${TLS_KEY:-}
     volumes:
-      - speaker-profiles:/data/speakers
+      - speaker-data:/data/speakers
     depends_on:
       speaches-stt:
         condition: service_started
 
-  # ─── Speaches STT (faster-whisper, CTranslate2) ────────────────────────────
-  # CPU by default. For GPU, see docker-compose.gpu.yml override.
-  # Systran model requires HF_TOKEN (set in .env). Without it, falls back to
-  # deepdml/faster-whisper-large-v3-turbo-ct2 (ungated, same model weights).
+  # ─── Speaches STT (faster-whisper) ─────────────────────────────────────────
+  # Speech-to-text. GPU: ~260ms, CPU: ~2-3s per utterance.
+  # Set STT_TAG=latest-cuda in .env for GPU mode.
   speaches-stt:
-    image: ghcr.io/speaches-ai/speaches:${STT_IMAGE_TAG:-latest-cuda}
-    container_name: openclaw-companion-stt
+    image: ghcr.io/speaches-ai/speaches:${STT_TAG:-latest}
+    container_name: openclaw-stt
     restart: unless-stopped
     ports:
       - "${STT_PORT:-9000}:8000"
     environment:
-      - WHISPER__MODEL=${ASR_MODEL:-Systran/faster-whisper-large-v3-turbo}
-      - WHISPER__INFERENCE_DEVICE=${STT_DEVICE:-cuda}
+      - WHISPER__MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - WHISPER__INFERENCE_DEVICE=${STT_DEVICE:-cpu}
+      - WHISPER__USE_BATCHED_MODE=true
+      - UVICORN__HOST=0.0.0.0
       - HF_TOKEN=${HF_TOKEN:-}
     volumes:
       - whisper-models:/home/ubuntu/.cache/huggingface
-
-  # ─── Kokoro FastAPI TTS (GPU, OpenAI-compatible, ~330ms) ───────────────────
-  # Enable: set TTS_ENGINE=kokoro in .env, then:
-  #   docker compose --profile kokoro up -d
-  kokoro-tts:
-    image: ghcr.io/remsky/kokoro-fastapi-gpu:latest
-    container_name: openclaw-companion-kokoro
-    restart: unless-stopped
-    profiles: ["kokoro"]
-    ports:
-      - "5004:8080"
     deploy:
       resources:
         reservations:
@@ -79,19 +69,67 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # ─── XTTS v2 (optional, local GPU, voice cloning, ~1s first chunk) ────────
-  # Enable: set TTS_ENGINE=xtts in .env, then:
-  #   docker compose --profile xtts up -d
-  # NOTE: ~30GB image, first pull takes a while
-  xtts-server:
-    image: ghcr.io/coqui-ai/xtts-streaming-server:latest-cuda121
-    container_name: openclaw-companion-xtts
+  # ─── Kokoro TTS ────────────────────────────────────────────────────────────
+  # Fast local TTS. GPU: ~340ms, CPU: ~1s. OpenAI-compatible API.
+  # Set KOKORO_TAG=latest-gpu in .env for GPU mode.
+  # Only needed if TTS_ENGINE=kokoro.
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi:${KOKORO_TAG:-latest-cpu}
+    container_name: openclaw-kokoro
     restart: unless-stopped
-    profiles: ["xtts"]
     ports:
-      - "5002:80"
+      - "${KOKORO_PORT:-5004}:8880"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ─── Google Meet Bot (optional) ────────────────────────────────────────────
+  # Joins Meet calls with Live2D avatar, transcribes, responds.
+  # Usage: docker compose --profile meet up -d
+  meet-bot:
+    build: ./meet-bot
+    container_name: openclaw-meet-bot
+    restart: unless-stopped
+    network_mode: host
+    profiles: ["meet"]
     environment:
-      - COQUI_TOS_AGREED=1
+      - GATEWAY_WS_URL=${GATEWAY_WS_URL:-ws://127.0.0.1:18789}
+      - GATEWAY_TOKEN=${GATEWAY_TOKEN}
+      - WHISPER_URL=http://127.0.0.1:${STT_PORT:-9000}/v1/audio/transcriptions
+      - WHISPER_MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - TTS_ENGINE=${TTS_ENGINE:-kokoro}
+      - KOKORO_URL=http://127.0.0.1:${KOKORO_PORT:-5004}
+      - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
+      - KOKORO_VOICE_EN=${KOKORO_VOICE_EN:-bm_george}
+      - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
+      - BOT_NAME=${BOT_NAME:-Jarvis}
+      - GW_SESSION_KEY=${MEET_SESSION_KEY:-meet}
+      - LIVE2D_MODEL=${LIVE2D_MODEL:-wanko}
+      - LIVE2D_ENABLED=${LIVE2D_ENABLED:-true}
+      - DEFAULT_LANG=${DEFAULT_LANG:-es}
+      - SPEAKER_URL=http://127.0.0.1:3201
+      - DIARIZER_URL=ws://127.0.0.1:${DIARIZER_PORT:-3202}
+      - MEET_PORT=${MEET_PORT:-3300}
+
+  # ─── Speaker Diarization (optional) ────────────────────────────────────────
+  # Real-time "who is speaking" using Diart + pyannote.
+  # Usage: docker compose --profile diarizer up -d
+  diarizer:
+    build: ./diarizer
+    container_name: openclaw-diarizer
+    restart: unless-stopped
+    profiles: ["diarizer"]
+    ports:
+      - "${DIARIZER_PORT:-3202}:3202"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - LATENCY=${DIARIZER_LATENCY:-2.0}
+      - STEP=${DIARIZER_STEP:-0.5}
+      - WS_PORT=3202
     deploy:
       resources:
         reservations:
@@ -101,5 +139,5 @@ services:
               capabilities: [gpu]
 
 volumes:
-  speaker-profiles:
+  speaker-data:
   whisper-models:

@@ -1,19 +1,19 @@
-FROM python:3.12-slim
+FROM python:3.11
 
 WORKDIR /app
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg libsndfile1 build-essential && \
+    ffmpeg libsndfile1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch with CUDA support + diart
+# Install PyTorch with CUDA support
 RUN pip install --no-cache-dir \
-    torch torchaudio --index-url https://download.pytorch.org/whl/cu124 && \
-    pip install --no-cache-dir \
-    diart \
-    websockets \
-    pyannote.audio
+    torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Install deps (pandas wheel, then diart + pyannote)
+RUN pip install --no-cache-dir pandas websockets
+RUN pip install --no-cache-dir diart pyannote.audio
 
 COPY server.py .
 
