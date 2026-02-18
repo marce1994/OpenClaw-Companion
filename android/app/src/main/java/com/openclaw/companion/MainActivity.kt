@@ -2188,11 +2188,18 @@ class MainActivity : Activity() {
                 releaseMediaPlayer()
                 mediaPlayer = MediaPlayer().apply {
                     setDataSource(tempFile.absolutePath)
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .build()
+                    )
                     setOnCompletionListener {
                         tempFile.delete()
                         playNextChunk()
                     }
-                    setOnErrorListener { _, _, _ ->
+                    setOnErrorListener { mp, what, extra ->
+                        Log.e("OpenClaw", "Chunk playback error: what=$what extra=$extra file=${tempFile.name}")
                         tempFile.delete()
                         playNextChunk()
                         false
@@ -2200,6 +2207,7 @@ class MainActivity : Activity() {
                     prepare()
                     setupVisualizer(this.audioSessionId)
                     start()
+                    Log.d("OpenClaw", "Playing chunk ${chunk.index} ext=$chunkExt size=${audioBytes.size} duration=${this.duration}ms")
                 }
             } catch (e: Exception) {
                 Log.e("OpenClaw", "Chunk playback error", e)
