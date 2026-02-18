@@ -322,8 +322,8 @@ function isGarbageTranscription(text) {
  * - 'kokoro': Kokoro TTS (local GPU, fastest, ~400ms on RTX 3090, no voice cloning)
  * @returns {Buffer} Audio data (MP3 for edge, WAV for xtts/kokoro)
  */
-async function generateTTS(text) {
-  if (TTS_ENGINE === 'kokoro') return generateTTS_Kokoro(text);
+async function generateTTS(text, { outputFormat = 'wav' } = {}) {
+  if (TTS_ENGINE === 'kokoro') return generateTTS_Kokoro(text, outputFormat);
   if (TTS_ENGINE === 'xtts') return generateTTS_XTTS(text);
   return generateTTS_Edge(text);
 }
@@ -368,7 +368,7 @@ function generateTTS_XTTS(text) {
 /** Kokoro TTS — local GPU, fastest option (~320ms on RTX 3090 with FastAPI) */
 /** Supports both Kokoro-FastAPI (OpenAI-compatible /v1/audio/speech) and legacy Flask (/tts) */
 let _kokoroApi = null; // 'openai' or 'legacy'
-async function generateTTS_Kokoro(text) {
+async function generateTTS_Kokoro(text, format = 'mp3') {
   try {
     // Try OpenAI-compatible API first (Kokoro-FastAPI), fall back to legacy Flask
     if (_kokoroApi !== 'legacy') {
@@ -376,7 +376,7 @@ async function generateTTS_Kokoro(text) {
         const resp = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'kokoro', input: text, voice: KOKORO_VOICE, response_format: 'wav', speed: 1.0 }),
+          body: JSON.stringify({ model: 'kokoro', input: text, voice: KOKORO_VOICE, response_format: format, speed: 1.0 }),
           signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) throw new Error(`Kokoro-FastAPI HTTP ${resp.status}`);

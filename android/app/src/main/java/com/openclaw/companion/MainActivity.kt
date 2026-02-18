@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.ToneGenerator
@@ -116,7 +117,7 @@ class MainActivity : Activity() {
     private var smartAudioRecord: AudioRecord? = null
     private val SILENCE_THRESHOLD_RMS = 300f    // Below this = silence (server filters hallucinations now)
     private val BARGEIN_THRESHOLD_RMS = 1500f  // Higher threshold to barge-in during playback (avoid echo)
-    private val SILENCE_DURATION_MS = 1200L     // 1.2s silence = end of speech
+    private val SILENCE_DURATION_MS = 2500L     // 2.5s silence = end of speech (matches meet bot)
     private val MIN_SPEECH_DURATION_MS = 600L   // Min 600ms to count as speech (filters noise bursts)
     private val MAX_SEGMENT_MS = 15000L         // Max 15s per segment
     private lateinit var spinnerListenMode: Spinner
@@ -186,6 +187,8 @@ class MainActivity : Activity() {
     private var gainControl: AutomaticGainControl? = null
     private var mediaButtonReceiver: BroadcastReceiver? = null
     private var visualizer: Visualizer? = null
+    private var audioTrack: AudioTrack? = null
+    private var audioTrackThread: Thread? = null
 
     // Swipe to cancel
     private var touchStartX = 0f
@@ -729,6 +732,7 @@ class MainActivity : Activity() {
     private fun stopAllPlayback() {
         releaseVisualizer()
         cancelEmotionCues()
+        stopAudioTrack()
         audioChunkQueue.clear()
         isPlayingChunks = false
         streamComplete = false
@@ -756,6 +760,7 @@ class MainActivity : Activity() {
     private fun cancelProcessing() {
         releaseVisualizer()
         cancelEmotionCues()
+        stopAudioTrack()
         audioChunkQueue.clear()
         isPlayingChunks = false
         streamComplete = false
@@ -2055,9 +2060,31 @@ class MainActivity : Activity() {
                 updateCancelButtonVisibility()
             }
 
-            // Detect format from header: WAV starts with "RIFF", MP3 with 0xFF or "ID3"
-            val ext = if (audioBytes.size > 4 && audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte()) ".wav" else ".mp3"
-            val tmpFile = File(cacheDir, "response$ext")
+            val isWav = audioBytes.size > 44 && audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte()
+
+            if (isWav) {
+                // WAV: use AudioTrack directly with PCM visualizer
+                playWavViaAudioTrack(audioBytes) {
+                    cancelEmotionCues()
+                    currentUiState = "idle"
+                    handler.postDelayed({ smartPaused = false }, 1000)
+                    handler.post {
+                        setActiveAmplitude(0f)
+                        if (listenMode == "smart_listen" && isConnected) {
+                            setStatusText(getString(R.string.status_smart_ambient))
+                        } else {
+                            setStatusText(getString(R.string.status_connected))
+                        }
+                        setActiveState(idleState())
+                        updateCancelButtonVisibility()
+                    }
+                }
+                scheduleEmotionCues()
+                return
+            }
+
+            // MP3/other: use MediaPlayer
+            val tmpFile = File(cacheDir, "response.mp3")
             FileOutputStream(tmpFile).use { it.write(audioBytes) }
 
             mediaPlayer?.release()
@@ -2076,10 +2103,7 @@ class MainActivity : Activity() {
                     mediaPlayer = null
                     tmpFile.delete()
                     currentUiState = "idle"
-                    // Delay resume to avoid picking up TTS echo tail
-                    handler.postDelayed({
-                        smartPaused = false
-                    }, 1000)
+                    handler.postDelayed({ smartPaused = false }, 1000)
                     handler.post {
                         setActiveAmplitude(0f)
                         if (listenMode == "smart_listen" && isConnected) {
@@ -2147,6 +2171,123 @@ class MainActivity : Activity() {
         mediaPlayer = null
     }
 
+    /**
+     * Play WAV audio directly via AudioTrack with PCM-based visualizer.
+     * Parses WAV header for sample rate/channels, streams PCM data, calculates RMS for amplitude.
+     */
+    private fun playWavViaAudioTrack(wavBytes: ByteArray, onComplete: () -> Unit) {
+        stopAudioTrack()
+
+        // Parse WAV header (standard 44-byte RIFF header)
+        if (wavBytes.size < 44) { onComplete(); return }
+
+        val channels = (wavBytes[22].toInt() and 0xFF) or ((wavBytes[23].toInt() and 0xFF) shl 8)
+        val wavSampleRate = (wavBytes[24].toInt() and 0xFF) or
+                ((wavBytes[25].toInt() and 0xFF) shl 8) or
+                ((wavBytes[26].toInt() and 0xFF) shl 16) or
+                ((wavBytes[27].toInt() and 0xFF) shl 24)
+        val bitsPerSample = (wavBytes[34].toInt() and 0xFF) or ((wavBytes[35].toInt() and 0xFF) shl 8)
+
+        // Find "data" chunk
+        var dataOffset = 12
+        var dataSize = 0
+        while (dataOffset < wavBytes.size - 8) {
+            val chunkId = String(wavBytes, dataOffset, 4)
+            val chunkSize = (wavBytes[dataOffset + 4].toInt() and 0xFF) or
+                    ((wavBytes[dataOffset + 5].toInt() and 0xFF) shl 8) or
+                    ((wavBytes[dataOffset + 6].toInt() and 0xFF) shl 16) or
+                    ((wavBytes[dataOffset + 7].toInt() and 0xFF) shl 24)
+            if (chunkId == "data") {
+                dataOffset += 8
+                dataSize = chunkSize
+                break
+            }
+            dataOffset += 8 + chunkSize
+        }
+
+        if (dataSize == 0 || dataOffset >= wavBytes.size) { onComplete(); return }
+        val pcmData = wavBytes.copyOfRange(dataOffset, minOf(dataOffset + dataSize, wavBytes.size))
+
+        val channelConfig = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
+        val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+        val minBuf = AudioTrack.getMinBufferSize(wavSampleRate, channelConfig, encoding)
+
+        Log.d("OpenClaw", "AudioTrack: ${wavSampleRate}Hz ${channels}ch ${bitsPerSample}bit, PCM=${pcmData.size}bytes")
+
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build())
+            .setAudioFormat(AudioFormat.Builder()
+                .setSampleRate(wavSampleRate)
+                .setEncoding(encoding)
+                .setChannelMask(channelConfig)
+                .build())
+            .setBufferSizeInBytes(maxOf(minBuf, pcmData.size))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        audioTrack?.play()
+
+        audioTrackThread = Thread {
+            try {
+                val writeChunkSize = wavSampleRate / 15 * 2 * channels // ~15fps visualizer updates
+                var offset = 0
+                while (offset < pcmData.size) {
+                    val end = minOf(offset + writeChunkSize, pcmData.size)
+                    val written = audioTrack?.write(pcmData, offset, end - offset) ?: 0
+                    if (written <= 0) break
+
+                    // PCM-based visualizer: calculate RMS from this chunk
+                    var sum = 0L
+                    var samples = 0
+                    var i = offset
+                    while (i + 1 < end) {
+                        val sample = (pcmData[i].toInt() and 0xFF) or (pcmData[i + 1].toInt() shl 8)
+                        val signed = if (sample > 32767) sample - 65536 else sample
+                        sum += signed.toLong() * signed.toLong()
+                        samples++
+                        i += 2
+                    }
+                    if (samples > 0) {
+                        val rms = Math.sqrt(sum.toDouble() / samples).toFloat()
+                        val normalized = (rms / 12000f).coerceIn(0f, 1f)
+                        handler.post { setActiveAmplitude(normalized) }
+                    }
+                    offset += written
+                }
+                // Wait for playback to finish
+                audioTrack?.let {
+                    try {
+                        // Estimate remaining playback time
+                        val durationMs = (pcmData.size.toLong() * 1000) / (wavSampleRate * channels * (bitsPerSample / 8))
+                        Thread.sleep(maxOf(durationMs - 100, 0)) // Wait for most of it
+                    } catch (_: InterruptedException) {}
+                }
+            } catch (e: Exception) {
+                Log.e("OpenClaw", "AudioTrack playback error", e)
+            } finally {
+                stopAudioTrack()
+                handler.post {
+                    setActiveAmplitude(0f)
+                    onComplete()
+                }
+            }
+        }
+        audioTrackThread?.start()
+    }
+
+    private fun stopAudioTrack() {
+        audioTrack?.let {
+            try { it.stop() } catch (_: Exception) {}
+            try { it.release() } catch (_: Exception) {}
+        }
+        audioTrack = null
+        audioTrackThread?.interrupt()
+        audioTrackThread = null
+    }
+
     private fun playNextChunk() {
         val chunk = audioChunkQueue.poll()
         if (chunk == null) {
@@ -2181,33 +2322,40 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val audioBytes = android.util.Base64.decode(chunk.audioB64, android.util.Base64.DEFAULT)
-                val chunkExt = if (audioBytes.size > 4 && audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte()) ".wav" else ".mp3"
-                val tempFile = File.createTempFile("chunk_${chunk.index}_", chunkExt, cacheDir)
-                tempFile.writeBytes(audioBytes)
+                val isWav = audioBytes.size > 44 && audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte()
 
-                releaseMediaPlayer()
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(tempFile.absolutePath)
-                    setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                            .build()
-                    )
-                    setOnCompletionListener {
-                        tempFile.delete()
+                if (isWav) {
+                    // WAV: play directly via AudioTrack (no MediaPlayer needed)
+                    playWavViaAudioTrack(audioBytes) {
                         playNextChunk()
                     }
-                    setOnErrorListener { mp, what, extra ->
-                        Log.e("OpenClaw", "Chunk playback error: what=$what extra=$extra file=${tempFile.name}")
-                        tempFile.delete()
-                        playNextChunk()
-                        false
+                } else {
+                    // MP3/other: fall back to MediaPlayer
+                    val tempFile = File.createTempFile("chunk_${chunk.index}_", ".mp3", cacheDir)
+                    tempFile.writeBytes(audioBytes)
+                    releaseMediaPlayer()
+                    mediaPlayer = MediaPlayer().apply {
+                        setDataSource(tempFile.absolutePath)
+                        setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                                .build()
+                        )
+                        setOnCompletionListener {
+                            tempFile.delete()
+                            playNextChunk()
+                        }
+                        setOnErrorListener { _, what, extra ->
+                            Log.e("OpenClaw", "Chunk playback error: what=$what extra=$extra")
+                            tempFile.delete()
+                            playNextChunk()
+                            false
+                        }
+                        prepare()
+                        setupVisualizer(this.audioSessionId)
+                        start()
                     }
-                    prepare()
-                    setupVisualizer(this.audioSessionId)
-                    start()
-                    Log.d("OpenClaw", "Playing chunk ${chunk.index} ext=$chunkExt size=${audioBytes.size} duration=${this.duration}ms")
                 }
             } catch (e: Exception) {
                 Log.e("OpenClaw", "Chunk playback error", e)
@@ -2305,6 +2453,7 @@ class MainActivity : Activity() {
         stopSmartListening()
         stopPing()
         releaseVisualizer()
+        stopAudioTrack()
         bluetoothAudio.destroy()
         webSocket?.close(1000, "App closing")
         mediaPlayer?.release()
