@@ -2181,7 +2181,8 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val audioBytes = android.util.Base64.decode(chunk.audioB64, android.util.Base64.DEFAULT)
-                val tempFile = File.createTempFile("chunk_${chunk.index}_", ".mp3", cacheDir)
+                val chunkExt = if (audioBytes.size > 4 && audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte()) ".wav" else ".mp3"
+                val tempFile = File.createTempFile("chunk_${chunk.index}_", chunkExt, cacheDir)
                 tempFile.writeBytes(audioBytes)
 
                 releaseMediaPlayer()
