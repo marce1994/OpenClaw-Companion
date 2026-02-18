@@ -9,7 +9,6 @@ const AIResponder = require('./ai-responder');
 const MeetingMemory = require('./meeting-memory');
 const Live2DCanvas = require('./live2d-canvas');
 const CalendarSync = require('./calendar-sync');
-const DiarizerClient = require('./diarizer-client');
 
 const LOG = '[MeetBot]';
 
@@ -21,25 +20,13 @@ const aiResponder = new AIResponder(audioPipeline, memory);
 const meetJoiner = new MeetJoiner();
 const live2d = new Live2DCanvas();
 const calendar = new CalendarSync();
-const diarizer = new DiarizerClient(audioPipeline);
 
 // --- Wire up events ---
 transcriber.on('transcript', (entry) => {
-  // Enrich with diarizer speaker if available
-  const diartSpeaker = diarizer.getCurrentSpeaker();
-  if (diartSpeaker && (!entry.speaker || entry.speaker.startsWith('Speaker_'))) {
-    entry.speaker = diartSpeaker;
-    entry.speakerSource = 'diart';
-  }
-  
   memory.addEntry(entry);
-  // Update debug overlay
+  // Show thinking while AI processes
   if (config.live2dEnabled && live2d.active) {
     live2d.setStatus('thinking');
-    live2d.setDebug('lastTranscript', entry.text);
-    live2d.setDebug('lastSpeaker', (entry.speaker || '?') + (entry.speakerSource === 'diart' ? ' 🎯' : ''));
-    live2d.setDebug('lang', entry.language || '?');
-    live2d.setDebug('transcriptCount', memory.entries.length);
   }
   aiResponder.onTranscript(entry);
 });
@@ -68,7 +55,6 @@ meetJoiner.on('joined', async () => {
   console.log(LOG, 'Joined meeting — starting audio pipeline');
   audioPipeline.startCapture();
   transcriber.start();
-  diarizer.start();
   aiResponder.connect();
 
   // Inject Live2D renderer directly into Meet page (HD, 30fps+)
@@ -97,13 +83,6 @@ aiResponder.on('speaking-start', () => {
 aiResponder.on('speaking-end', () => {
   if (config.live2dEnabled && meetJoiner.page && live2d.active) {
     live2d.stopSpeaking();
-  }
-});
-
-aiResponder.on('response', ({ text }) => {
-  if (config.live2dEnabled && live2d.active) {
-    live2d.setDebug('lastResponse', text);
-    live2d.setDebug('responseCount', (live2d._responseCount = (live2d._responseCount || 0) + 1));
   }
 });
 
@@ -160,7 +139,6 @@ memory.on('meeting-ended', (info) => {
 
 async function stopPipeline() {
   transcriber.stop();
-  diarizer.stop();
   audioPipeline.stopCapture();
   aiResponder.disconnect();
   live2d.stop();
@@ -221,11 +199,6 @@ const server = http.createServer(async (req, res) => {
       return respond(res, 200, {
         entries: memory.getTranscript(),
         formatted: memory.getFormattedTranscript(),
-        diarizer: {
-          connected: !!(diarizer.ws && diarizer.ws.readyState === 1),
-          speakers: diarizer.currentSpeakers,
-          historyCount: diarizer.speakerHistory.length,
-        },
       });
     }
 
@@ -250,35 +223,6 @@ const server = http.createServer(async (req, res) => {
       });
 
       return respond(res, 202, { status: 'joining', meetLink });
-    }
-
-    if (method === 'POST' && url.pathname === '/unmute') {
-      if (meetJoiner.getState() !== 'in-meeting' || !meetJoiner.page) {
-        return respond(res, 400, { error: 'Not in a meeting' });
-      }
-      try {
-        const result = await meetJoiner.page.evaluate(() => {
-          // Try multiple selectors for the mic button
-          const selectors = [
-            '[aria-label*="Turn on microphone" i]',
-            '[aria-label*="Activar micrófono" i]',
-            '[aria-label*="unmute" i]',
-            '[data-is-muted="true"][aria-label*="microphone" i]',
-            '[data-is-muted="true"][aria-label*="micrófono" i]',
-          ];
-          for (const sel of selectors) {
-            const btn = document.querySelector(sel);
-            if (btn) { btn.click(); return 'unmuted: ' + sel; }
-          }
-          // Check if already unmuted
-          const onBtn = document.querySelector('[aria-label*="Turn off microphone" i], [aria-label*="Desactivar micrófono" i]');
-          if (onBtn) return 'already unmuted';
-          return 'mic button not found';
-        });
-        return respond(res, 200, { status: result });
-      } catch (e) {
-        return respond(res, 500, { error: e.message });
-      }
     }
 
     if (method === 'POST' && url.pathname === '/leave') {

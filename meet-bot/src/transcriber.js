@@ -136,11 +136,6 @@ class Transcriber extends EventEmitter {
 
       const lang = result.language || null;
 
-      // Self-introduction detection: "me llamo X" / "mi nombre es X" / "my name is X" / "I'm X"
-      if (speaker) {
-        this._detectSelfIntro(text, speaker);
-      }
-
       console.log(LOG, `Transcript [${lang || '?'}] [${speaker || '?'}]: "${text}"`);
       this.emit('transcript', {
         text,
@@ -151,52 +146,6 @@ class Transcriber extends EventEmitter {
     } catch (err) {
       console.error(LOG, 'Transcription error:', err.message);
     }
-  }
-
-  _detectSelfIntro(text, currentSpeakerId) {
-    // Don't rename if already has a real name (not Speaker_X)
-    if (!/^Speaker_\d+$/.test(currentSpeakerId)) return;
-
-    // Only match EXPLICIT self-introductions — aggressive patterns cause too many false positives
-    // For ambiguous cases, rely on AI rename via [RENAME:old:new] tags
-    const patterns = [
-      // "My name is X" / "Mi nombre es X" / "Me llamo X"
-      /(?:my name is|mi nombre es|me llamo)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
-      // "I'm X, nice to meet you" / "I'm X here"
-      /(?:I'?m|i am)\s+([A-Z][a-z]+)[,.]?\s+(?:nice|here|speaking|and I)/i,
-      // "Call me X"
-      /(?:call me|they call me)\s+([A-Z][a-z]+)/i,
-    ];
-
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (!match) continue;
-      const name = match[1];
-      // Skip common false positives
-      const skipWords = [config.botName.toLowerCase(), 'ok', 'yeah', 'yes', 'no', 'hey', 'well', 'so', 'the', 'this', 'that', 'just', 'here', 'there', 'thanks', 'thank', 'sorry', 'sure', 'right', 'good', 'great', 'fine', 'bueno', 'bien', 'dale', 'claro', 'todo', 'hola', 'chau', 'not', 'like', 'ready', 'trying', 'two', 'three', 'four', 'five', 'validated', 'therefore', 'also', 'still', 'really', 'going', 'about', 'been', 'what', 'how', 'why', 'when', 'where', 'who'];
-      if (skipWords.includes(name.toLowerCase())) continue;
-      if (name.length < 2 || name.length > 20) continue;
-
-      console.log(LOG, `Self-intro detected: "${currentSpeakerId}" → "${name}" (from: "${text.substring(0, 60)}")`);
-      this._renameSpeaker(currentSpeakerId, name);
-      break;
-    }
-  }
-
-  _renameSpeaker(oldName, newName) {
-    const url = new URL(SPEAKER_URL + '/rename');
-    const req = http.request({
-      hostname: url.hostname, port: url.port, path: url.pathname,
-      method: 'POST',
-      headers: { 'X-Old-Name': oldName, 'X-New-Name': newName },
-      timeout: 3000,
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => console.log(LOG, `Renamed: ${data}`));
-    });
-    req.on('error', (e) => console.warn(LOG, `Rename failed: ${e.message}`));
-    req.end();
   }
 
   _isHallucination(text) {
@@ -283,7 +232,7 @@ class Transcriber extends EventEmitter {
         `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${modelName}`
       );
       const fmtPart = Buffer.from(
-        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json`
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson`
       );
       const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`);
       const body = Buffer.concat([preamble, wavBuffer, modelPart, fmtPart, epilogue]);

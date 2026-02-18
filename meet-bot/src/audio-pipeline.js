@@ -84,41 +84,35 @@ class AudioPipeline extends EventEmitter {
 
       console.log(LOG, `Injecting ${(audioBuffer.length / 1024).toFixed(1)}KB audio (${format})...`);
 
-      if (format === 'wav' || format === 'pcm') {
-        // Stream PCM/WAV directly to paplay — no ffmpeg, no disk write
-        const isPcm = format === 'pcm' || (audioBuffer.length > 4 && 
-          audioBuffer[0] !== 0x52); // 0x52 = 'R' (RIFF header)
-        
-        const paplayArgs = isPcm 
-          ? ['--device=tts_output', '--raw', '--format=s16le', '--rate=24000', '--channels=1']
-          : ['--device=tts_output', '--raw', '--format=s16le', '--rate=24000', '--channels=1'];
-        
-        if (!isPcm) {
-          // WAV file — play directly
-          const tmpFile = `/tmp/tts_${Date.now()}.wav`;
-          writeFileSync(tmpFile, audioBuffer);
-          const proc = spawn('paplay', ['--device=tts_output', tmpFile]);
+      if (format === 'wav') {
+        // Convert through ffmpeg first to ensure compatible WAV format for PulseAudio
+        const tmpIn = `/tmp/tts_in_${Date.now()}.wav`;
+        const tmpOut = `/tmp/tts_out_${Date.now()}.wav`;
+        writeFileSync(tmpIn, audioBuffer);
+
+        const ffmpeg = spawn('ffmpeg', [
+          '-y', '-i', tmpIn,
+          '-ar', '48000', '-ac', '1', '-f', 'wav', tmpOut,
+        ], { stdio: ['ignore', 'ignore', 'ignore'] });
+
+        ffmpeg.on('close', (ffCode) => {
+          try { unlinkSync(tmpIn); } catch (e) {}
+          if (ffCode !== 0) {
+            try { unlinkSync(tmpOut); } catch (e) {}
+            return reject(new Error(`ffmpeg conversion failed: code ${ffCode}`));
+          }
+
+          const proc = spawn('paplay', ['--device=tts_output', tmpOut]);
           proc.on('close', (code) => {
-            try { unlinkSync(tmpFile); } catch (e) {}
+            try { unlinkSync(tmpOut); } catch (e) {}
             if (code === 0) resolve();
             else reject(new Error(`paplay exited with code ${code}`));
           });
           proc.on('error', (err) => {
-            try { unlinkSync(tmpFile); } catch (e) {}
+            try { unlinkSync(tmpOut); } catch (e) {}
             reject(err);
           });
-          return;
-        }
-        
-        // Raw PCM — pipe directly to paplay (zero disk I/O)
-        const proc = spawn('paplay', paplayArgs, { stdio: ['pipe', 'ignore', 'ignore'] });
-        proc.stdin.write(audioBuffer);
-        proc.stdin.end();
-        proc.on('close', (code) => {
-          if (code === 0) resolve();
-          else reject(new Error(`paplay exited with code ${code}`));
         });
-        proc.on('error', reject);
       } else {
         // Raw PCM — pipe through ffmpeg to convert to WAV then paplay
         const ffmpeg = spawn('ffmpeg', [

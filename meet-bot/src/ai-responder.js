@@ -26,9 +26,13 @@ class AIResponder extends EventEmitter {
     this.detectedLang = config.defaultLang || 'es'; // Current meeting language
     this.lastResponseTime = 0; // Cooldown tracking
     this.responseCooldownMs = 10000; // 10s cooldown after each response
-    this.audioQueue = []; // FIFO queue for sequential audio playback
-    this.playingAudio = false; // Mutex for audio injection
-    this.speaking = false; // True while TTS is playing
+    this.audioQueue = []; // FIFO queue for TTS responses
+    this.playingAudio = false; // Mutex: true while audio is being played
+    
+    // Transcript batching: accumulate transcripts before sending to AI
+    this.batchBuffer = []; // { text, speaker, language, timestamp, nameMentioned }
+    this.batchTimer = null;
+    this.batchWindowMs = 10000; // 10s accumulation window
   }
 
   setMeetingId(id) { this.meetingId = id; }
@@ -228,57 +232,87 @@ class AIResponder extends EventEmitter {
     const botName = config.botName.toLowerCase();
 
     const isSummary = /\b(resumen|summary|resumir)\b/i.test(text);
-    // Match bot name + common Whisper mis-transcriptions
-    const nameVariants = [botName, 'jervis', 'jarves', 'jarvis', 'shervis', 'charvis', 'jarviz', 'jarbi', 'jarby', 'yarvis', 'xervis', 'charbis', 'jarbis', 'chervis', 'gervis', 'harvis', 'charbi'];
+    const nameVariants = [botName, 'jervis', 'jarves', 'jarvis', 'shervis', 'charvis', 'jarviz', 'jarbi', 'jarby', 'yarvis', 'xervis', 'charbis', 'jarbis', 'chervis', 'gervis', 'harvis'];
     const nameMentioned = nameVariants.some(v => text.includes(v));
 
-    // Cooldown check
     const now = Date.now();
     const inCooldown = (now - this.lastResponseTime) < this.responseCooldownMs;
 
-    console.log(LOG, `Transcript: "${text.substring(0,60)}" name=${nameMentioned} processing=${this.processing} cooldown=${inCooldown} speaking=${this.speaking}`);
+    console.log(LOG, `Transcript: "${text.substring(0,60)}" name=${nameMentioned} processing=${this.processing} cooldown=${inCooldown} batch=${this.batchBuffer.length}`);
 
     if (this.processing || !this.connected) return;
-    if (this.speaking && !nameMentioned) return; // Don't process while Jarvis is talking (echo)
-    if (inCooldown && !nameMentioned) return; // Skip proactive during cooldown, but allow name mentions
 
+    // Summary requests bypass batching
     if (isSummary) {
+      this._flushBatch(); // clear any pending batch
       this._requestSummary();
-    } else {
-      // Unified proactive mode — AI decides whether to respond
-      this._respondProactive(entry.text, nameMentioned);
+      return;
     }
+
+    // Name mention → flush batch immediately and respond
+    if (nameMentioned) {
+      this._flushBatch();
+      this._respondProactive(entry.text, true);
+      return;
+    }
+
+    // During cooldown, just buffer (don't start timer)
+    if (inCooldown) {
+      this.batchBuffer.push({ text: entry.text, speaker: entry.speaker, timestamp: now });
+      return;
+    }
+
+    // Add to batch buffer
+    this.batchBuffer.push({ text: entry.text, speaker: entry.speaker, timestamp: now });
+
+    // Start/reset batch timer
+    if (this.batchTimer) clearTimeout(this.batchTimer);
+    this.batchTimer = setTimeout(() => this._flushBatch(), this.batchWindowMs);
   }
 
-  _respondProactive(transcriptText, nameMentioned = false) {
+  _flushBatch() {
+    if (this.batchTimer) { clearTimeout(this.batchTimer); this.batchTimer = null; }
+    if (this.batchBuffer.length === 0) return;
+    if (this.processing) return;
+
+    // Combine all buffered transcripts into one request
+    const combined = this.batchBuffer.map(b => `[${b.speaker || 'Unknown'}]: ${b.text}`).join('\n');
+    const lastText = this.batchBuffer[this.batchBuffer.length - 1].text;
+    const count = this.batchBuffer.length;
+    this.batchBuffer = [];
+
+    console.log(LOG, `Flushing batch: ${count} transcripts`);
+    this._respondProactive(combined, false, true);
+  }
+
+  _respondProactive(transcriptText, nameMentioned = false, isBatched = false) {
     if (this.processing) return;
     this.processing = true;
 
-    const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || '?'}]: ${t.text}`).join('\n');
+    const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || 'Unknown'}]: ${t.text}`).join('\n');
 
     const nameHint = nameMentioned
       ? `Your name ("${config.botName}") was mentioned, but they might be talking ABOUT you, not TO you. Only respond if they're clearly addressing you or asking you something directly. `
       : '';
 
-    const speakerRenameInstruction = `\nIf someone introduces themselves or you learn a speaker's name (e.g. "call me X", "that was Luke", "I'm Pablo"), include [RENAME:CurrentID:RealName] at the END of your response. Example: "Nice to meet you! [RENAME:Speaker_1:Luke]". Only use this when you're confident about the name.`;
-
-    const backgroundContext = `\nBackground context: You are Jarvis, AI assistant for Pablo Bianco. Pablo is a full-stack developer based in Argentina (General Belgrano, Buenos Aires). He runs Digital Village (digitalvillage.com.au, digitalvillage.network). His wife Damaris runs Piel de Porcelana (Korean skincare). You run on a Dell XPS 15 with an RTX 3090 eGPU. You were built using OpenClaw. You know about Pablo's projects, infrastructure, and work context.`;
+    const batchHint = isBatched
+      ? `The following is a batch of recent conversation lines. Review them all and decide if you should contribute. `
+      : '';
 
     const langInstruction = this.detectedLang === 'en'
       ? `You are in a Google Meet call as ${config.botName}. You hear the conversation. `
-        + nameHint
+        + nameHint + batchHint
         + `Only respond if you can add real value (answer a question, provide info, give an opinion when asked). `
         + `Keep it concise (1-3 sentences, it will be read aloud). Reply in English.\n`
         + `If the conversation doesn't need you, reply EXACTLY "SKIP" and nothing else.`
-        + speakerRenameInstruction + backgroundContext
       : `Estás en una reunión de Google Meet como ${config.botName}. Escuchás la conversación. `
-        + nameHint
+        + nameHint + batchHint
         + `Solo respondé si podés aportar algo útil (responder una pregunta, dar info, opinar cuando te preguntan). `
         + `Sé conciso (1-3 oraciones, se va a leer en voz alta). Respondé en español.\n`
-        + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP" y nada más.`
-        + speakerRenameInstruction + backgroundContext;
+        + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP" y nada más.`;
 
-    const prompt = `${langInstruction}\n\nContexto reciente:\n${context}\n\nÚltimo: "${transcriptText}"`;
+    const lastLine = isBatched ? `Batch de transcripciones recientes:\n${transcriptText}` : `Último: "${transcriptText}"`;
+    const prompt = `${langInstruction}\n\nContexto reciente:\n${context}\n\n${lastLine}`;
 
     this._sendChat(prompt);
   }
@@ -349,85 +383,51 @@ ${transcript}`;
   }
 
   async _handleAIResponse(text) {
-    try {
-      // Skip if AI decided not to respond
-      if (text.trim() === 'SKIP' || text.trim() === 'NO_REPLY' || text.trim() === 'HEARTBEAT_OK') {
-        console.log(LOG, 'AI skipped (no relevant response)');
-        this.processing = false;
-        this.emit('skip');
-        return;
-      }
-      this.lastResponseTime = Date.now(); // Start cooldown
-
-      // Extract and process [RENAME:OldName:NewName] tags
-      const renamePattern = /\[RENAME:([^\]:]+):([^\]]+)\]/g;
-      let renameMatch;
-      while ((renameMatch = renamePattern.exec(text)) !== null) {
-        const [, oldName, newName] = renameMatch;
-        console.log(LOG, `AI rename: "${oldName}" → "${newName}"`);
-        this._renameSpeaker(oldName.trim(), newName.trim());
-      }
-      // Strip rename tags from spoken text
-      const spokenText = text.replace(/\s*\[RENAME:[^\]]+\]/g, '').trim();
-      if (!spokenText) {
-        this.processing = false;
-        return;
-      }
-
-      const audioBuffer = await this._getTTS(spokenText);
-      if (audioBuffer?.length > 0) {
-        this.audioQueue.push({ audio: audioBuffer, text: spokenText });
-        this._drainQueue();
-      } else {
-        this.memory.addEntry({ text: spokenText, timestamp: Date.now(), speaker: config.botName });
-        this.emit('response', { text: spokenText });
-      }
-    } catch (err) {
-      console.error(LOG, 'Failed to handle response:', err.message);
+    // Skip if AI decided not to respond
+    if (text.trim() === 'SKIP' || text.trim() === 'NO_REPLY' || text.trim() === 'HEARTBEAT_OK') {
+      console.log(LOG, 'AI skipped (no relevant response)');
+      this.processing = false;
+      this.emit('skip');
+      return;
     }
+
+    this.lastResponseTime = Date.now(); // Start cooldown
+
+    // Add to FIFO queue instead of playing immediately
+    this.audioQueue.push(text);
+    console.log(LOG, `Queued response (queue size: ${this.audioQueue.length}): "${text.substring(0, 60)}..."`);
+    this._drainQueue();
   }
 
   async _drainQueue() {
-    if (this.playingAudio) return; // Already draining
+    if (this.playingAudio || this.audioQueue.length === 0) return;
     this.playingAudio = true;
 
     while (this.audioQueue.length > 0) {
-      const { audio, text } = this.audioQueue.shift();
+      const text = this.audioQueue.shift();
       try {
-        this.speaking = true;
-        this.emit('speaking-start');
-        await this.audioPipeline.injectAudio(audio, 'pcm');
-        this.emit('speaking-end');
-        this.speaking = false;
-        console.log(LOG, 'Audio played from queue');
+        const audioBuffer = await this._getTTS(text);
+        if (audioBuffer?.length > 0) {
+          this.emit('speaking-start');
+          await this.audioPipeline.injectAudio(audioBuffer, 'wav');
+          this.emit('speaking-end');
+          console.log(LOG, `Audio played (${this.audioQueue.length} remaining in queue)`);
+        }
 
-        this.memory.addEntry({ text, timestamp: Date.now(), speaker: config.botName });
+        this.memory.addEntry({
+          text,
+          timestamp: Date.now(),
+          speaker: config.botName,
+        });
+
         this.emit('response', { text });
       } catch (err) {
-        console.error(LOG, 'Audio playback error:', err.message);
-        this.speaking = false;
+        console.error(LOG, 'Failed to play audio:', err.message);
         this.emit('speaking-end');
       }
     }
 
     this.playingAudio = false;
-  }
-
-  _renameSpeaker(oldName, newName) {
-    const speakerUrl = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
-    const url = new URL(speakerUrl + '/rename');
-    const req = http.request({
-      hostname: url.hostname, port: url.port, path: url.pathname,
-      method: 'POST',
-      headers: { 'X-Old-Name': oldName, 'X-New-Name': newName },
-      timeout: 3000,
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => console.log(LOG, `Speaker renamed: ${data}`));
-    });
-    req.on('error', (e) => console.warn(LOG, `Rename failed: ${e.message}`));
-    req.end();
   }
 
   async _getTTS(text) {
@@ -451,7 +451,7 @@ ${transcript}`;
       const url = new URL(config.kokoroUrl);
       const voice = this.detectedLang === 'en' ? config.kokoroVoiceEn : config.kokoroVoice;
       // Try OpenAI-compatible API first (Kokoro-FastAPI)
-      const body = JSON.stringify({ model: 'kokoro', input: text, voice, response_format: 'pcm', speed: 1.0 });
+      const body = JSON.stringify({ model: 'kokoro', input: text, voice, response_format: 'wav', speed: 1.0 });
       const req = http.request({
         hostname: url.hostname, port: url.port,
         path: '/v1/audio/speech', method: 'POST',
