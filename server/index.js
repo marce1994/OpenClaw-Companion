@@ -1398,6 +1398,41 @@ async function handleTestEmotions(ws) {
   }
 }
 
+// ─── Device Command Support ─────────────────────────────────────────────────
+
+/** Send a command to the connected Android device and wait for the response */
+function sendDeviceCommand(ws, command, params = {}, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const id = 'req_' + crypto.randomUUID().slice(0, 8);
+    if (!ws._pendingCommands) ws._pendingCommands = {};
+
+    const timer = setTimeout(() => {
+      delete ws._pendingCommands[id];
+      reject(new Error(`Device command ${command} timed out`));
+    }, timeoutMs);
+
+    ws._pendingCommands[id] = {
+      resolve: (result) => { clearTimeout(timer); resolve(result); },
+      reject: (err) => { clearTimeout(timer); reject(err); },
+    };
+
+    send(ws, { type: 'device_command', id, command, params });
+  });
+}
+
+/** Get the first authenticated WS client (for HTTP API) */
+function getActiveClient() {
+  for (const client of wss.clients) {
+    if (client._authenticated && client.readyState === 1) return client;
+  }
+  if (wssSecure) {
+    for (const client of wssSecure.clients) {
+      if (client._authenticated && client.readyState === 1) return client;
+    }
+  }
+  return null;
+}
+
 // ─── HTTP + WebSocket Server ────────────────────────────────────────────────
 
 const TLS_CERT = process.env.TLS_CERT || '';
@@ -1405,9 +1440,68 @@ const TLS_KEY = process.env.TLS_KEY || '';
 const WSS_PORT = parseInt(process.env.WSS_PORT || '3443');
 
 const requestHandler = (req, res) => {
+  const setCors = () => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  };
+
+  if (req.method === 'OPTIONS') {
+    setCors();
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"status":"ok"}');
+  } else if (req.url === '/device/capabilities' && req.method === 'GET') {
+    setCors();
+    const client = getActiveClient();
+    if (!client) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No device connected' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      connected: true,
+      capabilities: client._deviceCapabilities || {},
+    }));
+  } else if (req.url === '/device/command' && req.method === 'POST') {
+    setCors();
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { command, params, timeout } = JSON.parse(body);
+        if (!command) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "command" field' }));
+          return;
+        }
+        const client = getActiveClient();
+        if (!client) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No device connected' }));
+          return;
+        }
+        // Check if device supports this command
+        const caps = client._deviceCapabilities || {};
+        if (caps[command] && !caps[command].available) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Device capability "${command}" not available` }));
+          return;
+        }
+        const result = await sendDeviceCommand(client, command, params || {}, timeout || 15000);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
   } else {
     res.writeHead(404);
     res.end('Not found');
@@ -1604,6 +1698,22 @@ function handleConnection(ws) {
         send(ws, { type: 'history_cleared' });
         break;
 
+      case 'capabilities':
+        ws._deviceCapabilities = msg.capabilities || {};
+        console.log('📱 Device capabilities:', Object.keys(ws._deviceCapabilities).join(', '));
+        break;
+
+      case 'device_response': {
+        const reqId = msg.id;
+        if (ws._pendingCommands && ws._pendingCommands[reqId]) {
+          ws._pendingCommands[reqId].resolve(msg);
+          delete ws._pendingCommands[reqId];
+        } else {
+          console.log(`⚠️ Device response for unknown request: ${reqId}`);
+        }
+        break;
+      }
+
       case 'ping':
         send(ws, { type: 'pong' });
         break;
@@ -1612,6 +1722,13 @@ function handleConnection(ws) {
 
   ws.on('close', () => {
     clearTimeout(authTimer);
+    // Reject all pending device commands
+    if (ws._pendingCommands) {
+      for (const [id, pending] of Object.entries(ws._pendingCommands)) {
+        pending.reject(new Error('Device disconnected'));
+      }
+      ws._pendingCommands = {};
+    }
     if (ws._sessionId && sessions.has(ws._sessionId)) {
       saveWsToSession(ws, sessions.get(ws._sessionId));
       expireSession(ws._sessionId);

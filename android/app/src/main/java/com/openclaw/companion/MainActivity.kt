@@ -63,6 +63,10 @@ import android.media.audiofx.Visualizer
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import com.openclaw.companion.live2d.Live2DView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 data class EmotionCue(val startMs: Long, val endMs: Long, val text: String, val emotion: String)
 data class AudioChunk(val audioB64: String, val emotion: String, val text: String, val index: Int)
@@ -199,6 +203,11 @@ class MainActivity : Activity() {
     private val skinOptions = arrayOf("Default", "Jarvis", "Fuego", "Matrix", "Cósmico", "Cute", "Haru", "Hiyori", "Mao", "Mark", "Natori", "Rice", "Wanko")
     private val live2dSkins = setOf("Haru", "Hiyori", "Mao", "Mark", "Natori", "Rice", "Wanko")
     private var isLive2DActive = false
+
+    // Device capabilities
+    private lateinit var commandDispatcher: CommandDispatcher
+    private lateinit var bluetoothAudio: BluetoothAudioCapability
+    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private val sampleRate = 16000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
@@ -374,9 +383,26 @@ class MainActivity : Activity() {
         val engineIdx = ttsEngineIds.indexOf(savedEngine)
         if (engineIdx >= 0) spinnerTtsEngine.setSelection(engineIdx)
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        // Initialize device capabilities
+        commandDispatcher = CommandDispatcher(this)
+        commandDispatcher.register(SystemInfoCapability())
+        commandDispatcher.register(LocationCapability())
+        commandDispatcher.register(CameraCapability())
+        bluetoothAudio = BluetoothAudioCapability(this)
+
+        // Request all needed permissions
+        val permissionsNeeded = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+            permissionsNeeded.add(Manifest.permission.RECORD_AUDIO)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            permissionsNeeded.add(Manifest.permission.CAMERA)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+            permissionsNeeded.add(Manifest.permission.BLUETOOTH_CONNECT)
+        if (permissionsNeeded.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permissionsNeeded.toTypedArray(), 1)
         }
 
         // Setup touch listeners for both mic buttons
@@ -1087,6 +1113,13 @@ class MainActivity : Activity() {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
+        // Auto-activate Bluetooth SCO if car/headset connected and setting enabled
+        val useBtMic = prefs.getBoolean("use_bluetooth_mic", true)
+        if (useBtMic && bluetoothAudio.isBluetoothAudioAvailable()) {
+            Log.d("SmartListen", "BT HFP detected, starting SCO for car mic")
+            bluetoothAudio.startSco()
+        }
+
         handler.post {
             setStatusText(getString(R.string.status_smart_ambient))
             setActiveState(OrbView.State.AMBIENT)
@@ -1282,6 +1315,10 @@ class MainActivity : Activity() {
         isSmartListening = false
         smartRecordThread?.interrupt()
         smartRecordThread = null
+        // Stop Bluetooth SCO if active
+        if (bluetoothAudio.isScoActive()) {
+            bluetoothAudio.stopSco()
+        }
         // Flush pending segment
         smartSegmentTimer?.let { handler.removeCallbacks(it) }
         val accumulated = pendingSmartSegment?.toByteArray()
@@ -1499,6 +1536,58 @@ class MainActivity : Activity() {
                             }
                             if (msg.has("historyCount")) {
                                 updateHistoryCount(msg.optInt("historyCount", 0))
+                            }
+                            // Send device capabilities report
+                            val capsReport = commandDispatcher.getCapabilitiesReport()
+                            // Add bluetooth_sco status
+                            capsReport.put("bluetooth_sco", JSONObject()
+                                .put("available", bluetoothAudio.isBluetoothAudioAvailable())
+                                .put("active", bluetoothAudio.isScoActive()))
+                            sendWs(JSONObject().put("type", "capabilities").put("capabilities", capsReport))
+                        }
+                        "device_command" -> {
+                            val cmdId = msg.optString("id", "")
+                            val command = msg.optString("command", "")
+                            val params = msg.optJSONObject("params") ?: JSONObject()
+                            Log.d("OpenClaw", "Device command: $command (id=$cmdId)")
+                            
+                            // Handle bluetooth_sco separately (not a standard capability)
+                            if (command == "bluetooth_sco") {
+                                val action = params.optString("action", "status")
+                                val result = JSONObject().put("status", "success")
+                                when (action) {
+                                    "start" -> {
+                                        bluetoothAudio.startSco()
+                                        result.put("data", JSONObject().put("scoActive", true).put("message", "SCO start requested"))
+                                    }
+                                    "stop" -> {
+                                        bluetoothAudio.stopSco()
+                                        result.put("data", JSONObject().put("scoActive", false).put("message", "SCO stopped"))
+                                    }
+                                    else -> {
+                                        result.put("data", JSONObject()
+                                            .put("scoActive", bluetoothAudio.isScoActive())
+                                            .put("available", bluetoothAudio.isBluetoothAudioAvailable()))
+                                    }
+                                }
+                                sendWs(JSONObject()
+                                    .put("type", "device_response")
+                                    .put("id", cmdId)
+                                    .put("command", command)
+                                    .put("status", "success")
+                                    .put("data", result.optJSONObject("data")))
+                            } else {
+                                // Execute via CommandDispatcher (async)
+                                coroutineScope.launch {
+                                    val result = commandDispatcher.execute(command, params)
+                                    sendWs(JSONObject()
+                                        .put("type", "device_response")
+                                        .put("id", cmdId)
+                                        .put("command", command)
+                                        .put("status", result.optString("status", "error"))
+                                        .put("data", result.optJSONObject("data"))
+                                        .put("error", result.optJSONObject("error")))
+                                }
                             }
                         }
                         "history_count" -> {
@@ -2207,6 +2296,7 @@ class MainActivity : Activity() {
         stopSmartListening()
         stopPing()
         releaseVisualizer()
+        bluetoothAudio.destroy()
         webSocket?.close(1000, "App closing")
         mediaPlayer?.release()
         wakeLock?.let { if (it.isHeld) it.release() }

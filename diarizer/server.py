@@ -16,6 +16,10 @@ from typing import Optional
 
 import numpy as np
 import torch
+import torchaudio
+# Monkey-patch: torchaudio 2.6+ removed set_audio_backend, but diart calls it
+if not hasattr(torchaudio, 'set_audio_backend'):
+    torchaudio.set_audio_backend = lambda x: None
 from websockets.asyncio.server import serve
 
 logging.basicConfig(level=logging.INFO, format='[Diarizer] %(message)s')
