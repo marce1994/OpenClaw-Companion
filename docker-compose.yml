@@ -3,11 +3,13 @@
 #
 # Quick start:
 #   cp .env.example .env   # edit with your values
-#   ./setup.sh             # or manually: docker compose up -d
+#   docker compose up -d   # starts voice-server + whisper + kokoro
 #
-# GPU mode (set in .env: STT_TAG=latest-cuda, KOKORO_TAG=latest-gpu)
-# Meet bot: docker compose --profile meet up -d
-# Diarizer: docker compose --profile diarizer up -d
+# Meet bot:  docker compose --profile meet up -d
+# All:       docker compose --profile meet up -d
+#
+# GPU mode:  Set STT_DEVICE=cuda and KOKORO_TAG=latest-gpu in .env
+# Rebuild:   docker compose build && docker compose up -d
 ###############################################################################
 
 services:
@@ -41,26 +43,30 @@ services:
     volumes:
       - speaker-data:/data/speakers
     depends_on:
-      speaches-stt:
+      whisper-fast:
         condition: service_started
 
-  # ─── Speaches STT (faster-whisper) ─────────────────────────────────────────
-  # Speech-to-text. GPU: ~260ms, CPU: ~2-3s per utterance.
-  # Set STT_TAG=latest-cuda in .env for GPU mode.
-  speaches-stt:
-    image: ghcr.io/speaches-ai/speaches:${STT_TAG:-latest}
-    container_name: openclaw-stt
+  # ─── Whisper Fast (faster-whisper minimal server) ──────────────────────────
+  # Minimal HTTP server wrapping faster-whisper. No FastAPI/Gradio overhead.
+  # GPU: ~239ms, CPU: ~2-3s per utterance.
+  # Model cached locally; HF_HUB_OFFLINE=1 avoids network calls.
+  whisper-fast:
+    image: ghcr.io/speaches-ai/speaches:${STT_TAG:-latest-cuda}
+    container_name: whisper-fast
     restart: unless-stopped
+    command: ["python3", "/app/whisper-server.py"]
     ports:
-      - "${STT_PORT:-9000}:8000"
+      - "${STT_PORT:-9000}:9000"
     environment:
-      - WHISPER__MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
-      - WHISPER__INFERENCE_DEVICE=${STT_DEVICE:-cpu}
-      - WHISPER__USE_BATCHED_MODE=true
-      - UVICORN__HOST=0.0.0.0
-      - HF_TOKEN=${HF_TOKEN:-}
+      - MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
+      - DEVICE=${STT_DEVICE:-cuda}
+      - COMPUTE_TYPE=${STT_COMPUTE_TYPE:-int8}
+      - PORT=9000
+      - HF_HUB_OFFLINE=1
+      - PYTHONUNBUFFERED=1
     volumes:
-      - whisper-models:/home/ubuntu/.cache/huggingface
+      - ${HF_CACHE_PATH:-whisper-models}:/home/ubuntu/.cache/huggingface
+      - ./whisper-server/server.py:/app/whisper-server.py:ro
     deploy:
       resources:
         reservations:
@@ -70,12 +76,11 @@ services:
               capabilities: [gpu]
 
   # ─── Kokoro TTS ────────────────────────────────────────────────────────────
-  # Fast local TTS. GPU: ~340ms, CPU: ~1s. OpenAI-compatible API.
-  # Set KOKORO_TAG=latest-gpu in .env for GPU mode.
+  # Fast local TTS. GPU: ~330ms, CPU: ~1s. OpenAI-compatible API.
   # Only needed if TTS_ENGINE=kokoro.
   kokoro-tts:
-    image: ghcr.io/remsky/kokoro-fastapi:${KOKORO_TAG:-latest-cpu}
-    container_name: openclaw-kokoro
+    image: ghcr.io/remsky/kokoro-fastapi:${KOKORO_TAG:-latest-gpu}
+    container_name: kokoro-fastapi
     restart: unless-stopped
     ports:
       - "${KOKORO_PORT:-5004}:8880"
@@ -92,52 +97,37 @@ services:
   # Usage: docker compose --profile meet up -d
   meet-bot:
     build: ./meet-bot
-    container_name: openclaw-meet-bot
+    container_name: meet-bot
     restart: unless-stopped
     network_mode: host
     profiles: ["meet"]
     environment:
       - GATEWAY_WS_URL=${GATEWAY_WS_URL:-ws://127.0.0.1:18789}
       - GATEWAY_TOKEN=${GATEWAY_TOKEN}
-      - WHISPER_URL=http://127.0.0.1:${STT_PORT:-9000}/v1/audio/transcriptions
-      - WHISPER_MODEL=${WHISPER_MODEL:-Systran/faster-whisper-large-v3-turbo}
-      - TTS_ENGINE=${TTS_ENGINE:-kokoro}
+      - GW_SESSION_KEY=${MEET_SESSION_KEY:-meet}
+      - WHISPER_URL=http://127.0.0.1:${STT_PORT:-9000}
       - KOKORO_URL=http://127.0.0.1:${KOKORO_PORT:-5004}
       - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
       - KOKORO_VOICE_EN=${KOKORO_VOICE_EN:-bm_george}
       - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
       - BOT_NAME=${BOT_NAME:-Jarvis}
-      - GW_SESSION_KEY=${MEET_SESSION_KEY:-meet}
       - LIVE2D_MODEL=${LIVE2D_MODEL:-wanko}
       - LIVE2D_ENABLED=${LIVE2D_ENABLED:-true}
       - DEFAULT_LANG=${DEFAULT_LANG:-es}
       - SPEAKER_URL=http://127.0.0.1:3201
-      - DIARIZER_URL=ws://127.0.0.1:${DIARIZER_PORT:-3202}
+      - SPEAKER_ID=${SPEAKER_ID:-true}
       - MEET_PORT=${MEET_PORT:-3300}
-
-  # ─── Speaker Diarization (optional) ────────────────────────────────────────
-  # Real-time "who is speaking" using Diart + pyannote.
-  # Usage: docker compose --profile diarizer up -d
-  diarizer:
-    build: ./diarizer
-    container_name: openclaw-diarizer
-    restart: unless-stopped
-    profiles: ["diarizer"]
-    ports:
-      - "${DIARIZER_PORT:-3202}:3202"
-    environment:
-      - HF_TOKEN=${HF_TOKEN:-}
-      - LATENCY=${DIARIZER_LATENCY:-2.0}
-      - STEP=${DIARIZER_STEP:-0.5}
-      - WS_PORT=3202
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - VAD_CHUNK_MS=${VAD_CHUNK_MS:-1500}
+      - AUTO_LEAVE_ALONE_MS=${AUTO_LEAVE_ALONE_MS:-300000}
+    volumes:
+      - meet-data:/data/meetings
+    depends_on:
+      whisper-fast:
+        condition: service_started
+      kokoro-tts:
+        condition: service_started
 
 volumes:
   speaker-data:
   whisper-models:
+  meet-data:

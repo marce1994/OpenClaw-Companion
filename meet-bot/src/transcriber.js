@@ -102,6 +102,7 @@ class Transcriber extends EventEmitter {
       const wavBuffer = this._pcmToWav(audioBuffer, this.SAMPLE_RATE, 1, 16);
 
       // Run Whisper + Speaker ID in parallel
+      const sttStart = Date.now();
       const whisperPromise = this._sendToWhisper(wavBuffer);
       const speakerPromise = this.speakerIdEnabled
         ? this._identifySpeaker(wavBuffer).catch(err => {
@@ -114,6 +115,7 @@ class Transcriber extends EventEmitter {
         : Promise.resolve(null);
 
       const [result, speaker] = await Promise.all([whisperPromise, speakerPromise]);
+      const sttMs = Date.now() - sttStart;
 
       if (!result || !result.text) return;
 
@@ -136,12 +138,13 @@ class Transcriber extends EventEmitter {
 
       const lang = result.language || null;
 
-      console.log(LOG, `Transcript [${lang || '?'}] [${speaker || '?'}]: "${text}"`);
+      console.log(LOG, `Transcript [${lang || '?'}] [${speaker || '?'}] (${sttMs}ms): "${text}"`);
       this.emit('transcript', {
         text,
         timestamp: Date.now(),
         speaker,
         language: lang,
+        sttMs,
       });
     } catch (err) {
       console.error(LOG, 'Transcription error:', err.message);
@@ -232,7 +235,7 @@ class Transcriber extends EventEmitter {
         `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${modelName}`
       );
       const fmtPart = Buffer.from(
-        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson`
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json`
       );
       const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`);
       const body = Buffer.concat([preamble, wavBuffer, modelPart, fmtPart, epilogue]);

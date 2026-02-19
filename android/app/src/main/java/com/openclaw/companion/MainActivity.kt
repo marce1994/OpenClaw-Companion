@@ -115,10 +115,11 @@ class MainActivity : Activity() {
     @Volatile private var smartPaused = false // Pause during AI response/playback
     private var smartRecordThread: Thread? = null
     private var smartAudioRecord: AudioRecord? = null
-    private val SILENCE_THRESHOLD_RMS = 300f    // Below this = silence (server filters hallucinations now)
-    private val BARGEIN_THRESHOLD_RMS = 1500f  // Higher threshold to barge-in during playback (avoid echo)
-    private val SILENCE_DURATION_MS = 2500L     // 2.5s silence = end of speech (matches meet bot)
-    private val MIN_SPEECH_DURATION_MS = 600L   // Min 600ms to count as speech (filters noise bursts)
+    // P1-7: Lowered thresholds for car/noisy environments — server-side Whisper filters hallucinations
+    private val SILENCE_THRESHOLD_RMS = 150f    // Below this = silence (was 300, lowered for car mic sensitivity)
+    private val BARGEIN_THRESHOLD_RMS = 1200f   // Barge-in during playback (was 1500, lowered for car)
+    private val SILENCE_DURATION_MS = 2000L     // 2s silence = end of speech (was 2.5s, faster for conversation)
+    private val MIN_SPEECH_DURATION_MS = 400L   // Min 400ms to count as speech (was 600, car mics need faster pickup)
     private val MAX_SEGMENT_MS = 15000L         // Max 15s per segment
     private lateinit var spinnerListenMode: Spinner
     private val listenModeOptions = arrayOf("Push to Talk", "Smart Listen")
@@ -1823,6 +1824,8 @@ class MainActivity : Activity() {
                             handler.post {
                                 showSmartSubtitle("[$speaker] $t")
                                 setStatusText(getString(R.string.status_smart_heard, "[$speaker] ${t.take(30)}"))
+                                // P1-6: Also add ambient transcripts to chat so they're visible immediately
+                                addChatMessage(ChatMessage(role = "ambient", text = "$icon [$speaker] $t", isSmartListen = true))
                             }
                         }
                         "smart_status" -> {

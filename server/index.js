@@ -129,6 +129,17 @@ function httpReq(url, opts, body) {
 
 // ─── Speaker Identification ─────────────────────────────────────────────────
 
+// P1-8: Reset speaker profiles to avoid contamination between sessions (meet bot vs voice app)
+async function resetSpeakerProfiles() {
+  try {
+    const resp = await fetch(`${SPEAKER_URL}/reset`, { method: 'POST' });
+    if (resp.ok) console.log('🔄 Speaker profiles reset for new voice session');
+    else console.warn('⚠️ Speaker profile reset failed:', resp.status);
+  } catch (e) {
+    console.error('Speaker reset error:', e.message);
+  }
+}
+
 async function identifySpeaker(wavBuffer) {
   try {
     const resp = await fetch(`${SPEAKER_URL}/identify`, {
@@ -234,17 +245,42 @@ async function transcribe(audio) {
       const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`);
       const whisperModel = process.env.WHISPER_MODEL || 'Systran/faster-whisper-large-v3-turbo';
       const modelPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${whisperModel}`);
-      const langPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nes`);
-      const fmtPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson`);
+      // No language param → auto-detect (restricted to es/en in whisper-fast server)
+      const fmtPart = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json`);
       const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([header, audio, modelPart, langPart, fmtPart, footer]);
+      const body = Buffer.concat([header, audio, modelPart, fmtPart, footer]);
       const res = await httpReq(url, {
         method: 'POST',
         headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
       }, body);
       if (res.status === 200) {
         if (_whisperApi !== 'openai') { _whisperApi = 'openai'; console.log('🎤 Using OpenAI-compatible Whisper API'); }
-        return JSON.parse(res.body.toString()).text || '';
+        const parsed = JSON.parse(res.body.toString());
+        const text = parsed.text || '';
+        const lang = parsed.language || '';
+        
+        // Filter: only accept Spanish and English
+        if (lang && lang !== 'es' && lang !== 'en') {
+          console.log(`🚫 Non-es/en language filtered: "${text}" (lang=${lang})`);
+          return '';
+        }
+        
+        // Filter by confidence (verbose_json has segments with avg_logprob)
+        if (parsed.segments && parsed.segments.length > 0) {
+          const seg = parsed.segments[0];
+          const logprob = seg.avg_logprob ?? 0;
+          const noSpeech = seg.no_speech_prob ?? 0;
+          if (logprob < -0.6) {
+            console.log(`🚫 Low confidence filtered: "${text}" (logprob=${logprob.toFixed(2)})`);
+            return '';
+          }
+          if (noSpeech > 0.5) {
+            console.log(`🚫 No-speech filtered: "${text}" (no_speech=${noSpeech.toFixed(2)})`);
+            return '';
+          }
+        }
+        
+        return text;
       }
     } catch (e) {
       if (_whisperApi === 'openai') throw e;
@@ -1000,8 +1036,9 @@ async function handleTextMessage(ws, text, prefix) {
 
   let fullText = prefix ? `${prefix} ${text}` : text;
 
-  // Auto-search: inject web results if the message looks like it needs them
-  if (needsSearch(text)) {
+  // Auto-search: inject web results if the user's actual speech needs them
+  // Only search on the original text, not ambient context wrappers
+  if (needsSearch(text) && !text.startsWith('[Ambient')) {
     const query = extractSearchQuery(text);
     console.log(`🔍 Auto-search: "${query}"`);
     const results = await webSearch(query, 5);
@@ -1079,6 +1116,17 @@ async function handleTextMessage(ws, text, prefix) {
         send(ws, { type: 'buttons', options: buttons });
       }
 
+      // P1-9: Retry once on empty AI response for direct messages (not ambient context)
+      if (!ac.signal.aborted && !cleanFull && !fullText.startsWith('[Ambient')) {
+        console.log('⚠️ Empty AI response, retrying with simplified prompt...');
+        // Don't send stream_done yet, retry
+        ws._abortController = null;
+        ws._partialResponse = null;
+        ws._pendingUserMessage = null;
+        handleTextMessage(ws, fullText.replace(/^\[.*?\]:\s*/, '').trim() || fullText, '');
+        return;
+      }
+
       // Record exchange in conversation history (only if not cancelled)
       if (!ac.signal.aborted && cleanFull) {
         recordExchange(ws, fullText, cleanFull);
@@ -1093,9 +1141,6 @@ async function handleTextMessage(ws, text, prefix) {
     },
     ac.signal
   );
-
-  // Track partial response for barge-in (updated by the stream)
-  // We piggyback on the fullResponse in the onDone callback above
 }
 
 /**
@@ -1284,6 +1329,46 @@ function shouldRespond(text, botName) {
   return { respond: false };
 }
 
+// P2-10: SIMULTANEOUS USE — Meet bot and voice app can run at the same time.
+// Speaker profiles are reset when the voice app connects (P1-8) to avoid contamination.
+// The meet bot uses its own speaker profiles. They share the same Whisper server but
+// requests are independent. No special coordination needed beyond the profile reset.
+
+// P2-11: Auto noise detection — track ambient audio energy to auto-adjust thresholds
+const noiseTracker = {
+  samples: [],           // recent RMS values
+  maxSamples: 50,        // ~50 segments worth of data
+  baselineRms: 0,        // running average ambient noise level
+  highNoiseThreshold: 800, // if baseline > this, we're in a noisy environment
+  isNoisy: false,
+};
+
+function updateNoiseBaseline(audioBuffer) {
+  // Calculate RMS of the audio buffer
+  let sum = 0;
+  for (let i = 0; i + 1 < audioBuffer.length; i += 2) {
+    const sample = audioBuffer.readInt16LE(i);
+    sum += sample * sample;
+  }
+  const rms = Math.sqrt(sum / (audioBuffer.length / 2));
+  
+  noiseTracker.samples.push(rms);
+  if (noiseTracker.samples.length > noiseTracker.maxSamples) {
+    noiseTracker.samples.shift();
+  }
+  
+  const avg = noiseTracker.samples.reduce((a, b) => a + b, 0) / noiseTracker.samples.length;
+  const wasNoisy = noiseTracker.isNoisy;
+  noiseTracker.baselineRms = avg;
+  noiseTracker.isNoisy = avg > noiseTracker.highNoiseThreshold;
+  
+  if (noiseTracker.isNoisy !== wasNoisy) {
+    console.log(`🔊 Noise environment changed: ${noiseTracker.isNoisy ? 'NOISY' : 'quiet'} (baseline RMS: ${avg.toFixed(0)})`);
+  }
+  
+  return { rms, baseline: avg, isNoisy: noiseTracker.isNoisy };
+}
+
 // Throttle: only 1 ambient transcription at a time
 let _ambientBusy = false;
 
@@ -1293,10 +1378,13 @@ async function handleAmbientAudio(ws, audioBase64) {
     const audio = Buffer.from(audioBase64, 'base64');
     if (audio.length < 1000) return;
 
+    // P2-11: Track noise levels for auto-adjustment
+    const noiseInfo = updateNoiseBaseline(audio);
+
     if (_ambientBusy) return; // Drop if Whisper can't keep up
     _ambientBusy = true;
 
-    console.log(`🎧 Ambient audio: ${audio.length} bytes`);
+    console.log(`🎧 Ambient audio: ${audio.length} bytes (rms=${noiseInfo.rms.toFixed(0)}, noise=${noiseInfo.isNoisy ? 'HIGH' : 'low'})`);
     send(ws, { type: 'smart_status', status: 'transcribing' });
 
     const [text, speakerInfo] = await Promise.all([
@@ -1305,6 +1393,15 @@ async function handleAmbientAudio(ws, audioBase64) {
     ]).finally(() => { _ambientBusy = false; });
 
     if (!text.trim() || isGarbageTranscription(text)) {
+      send(ws, { type: 'smart_status', status: 'listening' });
+      return;
+    }
+    
+    // P2-11: In noisy environments, require longer transcripts to filter false positives
+    const minWords = noiseTracker.isNoisy ? 4 : 3;
+    const wordCount = text.trim().split(/\s+/).length;
+    if (wordCount < minWords) {
+      console.log(`🔇 Short ambient filtered (${wordCount} words): "${text}"`);
       send(ws, { type: 'smart_status', status: 'listening' });
       return;
     }
@@ -1339,23 +1436,34 @@ async function handleAmbientAudio(ws, audioBase64) {
 
     const botName = ws._botName || BOT_NAME;
     const decision = shouldRespond(text, botName);
-    const shouldReply = isOwner
-      ? (decision.respond || text.length > 15)
-      : decision.respond;
+    const shouldReply = decision.respond;
 
     if (shouldReply) {
       console.log(`🤖 Smart trigger: ${decision.reason || 'owner'} by ${speaker}`);
 
-      const contextLines = ws._ambientContext.slice(0, -1);
-      let contextPrompt = '';
-      if (contextLines.length > 0) {
-        contextPrompt = `[Ambient conversation context:\n${contextLines.map(c =>
-          `- [${c.speaker}${c.isOwner ? ' (your owner, highest priority)' : ''}]: "${c.text}"`
-        ).join('\n')}\n]\n\n`;
+      let fullPrompt;
+      
+      // P1-9: For name triggers (someone said "Jarvis"), send CLEAN direct message
+      // without ambient context wrapper — the wrapper confuses the AI into empty responses
+      if (decision.reason === 'name') {
+        // Strip the bot name from the beginning and send as direct message
+        const botName = ws._botName || BOT_NAME;
+        const cleanText = text.replace(new RegExp(`\\b${botName}\\b[,.:!?\\s]*`, 'gi'), '').trim() || text;
+        const speakerLabel = isOwner ? `${finalSpeaker} (your owner)` : finalSpeaker;
+        fullPrompt = `[${speakerLabel}]: ${cleanText}`;
+        console.log(`📢 Name trigger → clean direct message: "${cleanText}"`);
+      } else {
+        // For other triggers, include ambient context
+        const contextLines = ws._ambientContext.slice(0, -1);
+        let contextPrompt = '';
+        if (contextLines.length > 0) {
+          contextPrompt = `[Ambient conversation context:\n${contextLines.map(c =>
+            `- [${c.speaker}${c.isOwner ? ' (your owner, highest priority)' : ''}]: "${c.text}"`
+          ).join('\n')}\n]\n\n`;
+        }
+        const speakerLabel = isOwner ? `${finalSpeaker} (your owner)` : finalSpeaker;
+        fullPrompt = contextPrompt + `[${speakerLabel} just said: "${text}"]`;
       }
-
-      const speakerLabel = isOwner ? `${finalSpeaker} (your owner)` : finalSpeaker;
-      const fullPrompt = contextPrompt + `[${speakerLabel} just said: "${text}"]`;
 
       send(ws, { type: 'status', status: 'thinking' });
       send(ws, { type: 'transcript', text: `[${finalSpeaker}] ${text}` });
@@ -1567,6 +1675,12 @@ function handleConnection(ws) {
 
         if (msg.clientSeq) session.lastClientSeq = msg.clientSeq;
         console.log(`🔓 Authenticated (session: ${sessionId.slice(0, 8)}, sseq: ${ws._sseq}, history: ${(ws._conversationHistory || []).length} msgs)`);
+
+        // P1-8: Reset speaker profiles on new voice session to avoid contamination from meet bot
+        if (!msg.lastServerSeq) {
+          // Only reset on fresh connections (not reconnects)
+          resetSpeakerProfiles().catch(() => {});
+        }
       } else {
         send(ws, { type: 'error', message: 'Auth required' });
         ws.close();
@@ -1589,6 +1703,7 @@ function handleConnection(ws) {
     // ── Message routing ──
     switch (msg.type) {
       case 'audio':
+        // P2-12: Direct push-to-talk audio assumes it's the owner — no speaker ID needed
         if (msg.data) handleAudio(ws, msg.data, msg.prefix || '');
         break;
 

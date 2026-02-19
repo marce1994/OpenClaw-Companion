@@ -123,6 +123,7 @@ class Live2DCanvas {
    */
   async injectIntoMeet(meetPage) {
     console.log(LOG, 'Injecting Live2D renderer into Meet page...');
+    this.meetPage = meetPage; // Store reference for setStatus calls
 
     try {
       // Read all JS libraries
@@ -345,11 +346,15 @@ class Live2DCanvas {
             
             // Status icons map
             const statusIcons = {
+              'idle': '😴 Idle',
               'listening': '🎧 Listening...',
               'thinking': '🤔 Thinking...',
               'speaking': '🔊 Speaking...',
               'transcribing': '📝 Transcribing...',
             };
+            // HUD data
+            window.__lastTranscript = '';
+            window.__hudStats = { sttMs: 0, aiMs: 0, ttsMs: 0, queueSize: 0, totalMs: 0 };
             
             // Start idle animation
             try {
@@ -376,36 +381,70 @@ class Live2DCanvas {
                   // Draw Live2D output
                   avatarCtx.drawImage(canvas, 0, 0, 640, 360);
                   
-                  // Draw status overlay on the canvas itself
-                  const status = window.__jarvisStatus;
-                  if (status && status !== 'idle' && statusIcons[status]) {
-                    avatarCtx.save();
-                    avatarCtx.font = '16px Arial, sans-serif';
-                    const text = statusIcons[status];
-                    const tw = avatarCtx.measureText(text).width;
-                    const px = (640 - tw) / 2 - 12;
-                    const py = 335;
-                    // Background pill
+                  // === HUD OVERLAY ===
+                  const status = window.__jarvisStatus || 'idle';
+                  const statusLabel = statusIcons[status] || statusIcons['idle'];
+                  const transcript = window.__lastTranscript || '';
+                  const stats = window.__hudStats || {};
+                  
+                  avatarCtx.save();
+                  
+                  // --- Top-left: Status pill ---
+                  const L = 60; // Left margin (Meet crops ~50px)
+                  avatarCtx.font = 'bold 18px Arial, sans-serif';
+                  const stw = avatarCtx.measureText(statusLabel).width;
+                  const statusColors = {
+                    idle: 'rgba(80,80,80,0.6)',
+                    listening: 'rgba(0,150,80,0.75)',
+                    transcribing: 'rgba(200,150,0,0.75)',
+                    thinking: 'rgba(0,100,200,0.75)',
+                    speaking: 'rgba(180,50,200,0.75)',
+                  };
+                  avatarCtx.fillStyle = statusColors[status] || statusColors.idle;
+                  avatarCtx.fillRect(L, 20, stw + 16, 26);
+                  avatarCtx.fillStyle = '#fff';
+                  avatarCtx.fillText(statusLabel, L + 8, 40);
+                  
+                  // --- Top-right: Latency stats ---
+                  if (stats.totalMs > 0 || stats.queueSize > 0) {
+                    avatarCtx.font = '13px monospace';
+                    const lines = [];
+                    if (stats.sttMs) lines.push('STT: ' + stats.sttMs + 'ms');
+                    if (stats.aiMs) lines.push('AI: ' + stats.aiMs + 'ms');
+                    if (stats.ttsMs) lines.push('TTS: ' + stats.ttsMs + 'ms');
+                    if (stats.totalMs) lines.push('Total: ' + stats.totalMs + 'ms');
+                    if (stats.queueSize > 0) lines.push('Queue: ' + stats.queueSize);
+                    
+                    const lineH = 16;
+                    const boxW = 130;
+                    const boxX = 640 - L - boxW;
+                    const boxY = 20;
+                    const boxH = lines.length * lineH + 8;
                     avatarCtx.fillStyle = 'rgba(0,0,0,0.55)';
-                    // Rounded rect fallback (roundRect may not exist)
-                    const rw = tw + 24, rh = 26, rx = px, ry = py - 16, r = 13;
-                    avatarCtx.beginPath();
-                    avatarCtx.moveTo(rx + r, ry);
-                    avatarCtx.lineTo(rx + rw - r, ry);
-                    avatarCtx.arcTo(rx + rw, ry, rx + rw, ry + r, r);
-                    avatarCtx.lineTo(rx + rw, ry + rh - r);
-                    avatarCtx.arcTo(rx + rw, ry + rh, rx + rw - r, ry + rh, r);
-                    avatarCtx.lineTo(rx + r, ry + rh);
-                    avatarCtx.arcTo(rx, ry + rh, rx, ry + rh - r, r);
-                    avatarCtx.lineTo(rx, ry + r);
-                    avatarCtx.arcTo(rx, ry, rx + r, ry, r);
-                    avatarCtx.closePath();
-                    avatarCtx.fill();
-                    // Text
-                    avatarCtx.fillStyle = '#ffffff';
-                    avatarCtx.fillText(text, px + 12, py + 4);
-                    avatarCtx.restore();
+                    avatarCtx.fillRect(boxX, boxY, boxW, boxH);
+                    avatarCtx.fillStyle = '#ccc';
+                    lines.forEach((line, i) => {
+                      avatarCtx.fillText(line, boxX + 6, boxY + 14 + i * lineH);
+                    });
                   }
+                  
+                  // --- Bottom: Last transcript ---
+                  if (transcript) {
+                    avatarCtx.font = '14px Arial, sans-serif';
+                    const maxW = 520;
+                    let displayText = transcript;
+                    while (avatarCtx.measureText(displayText).width > maxW && displayText.length > 10) {
+                      displayText = '...' + displayText.substring(4);
+                    }
+                    const ttw = avatarCtx.measureText(displayText).width;
+                    const tpy = 290;
+                    avatarCtx.fillStyle = 'rgba(0,0,0,0.5)';
+                    avatarCtx.fillRect(L - 5, tpy - 14, ttw + 10, 20);
+                    avatarCtx.fillStyle = '#e0e0e0';
+                    avatarCtx.fillText(displayText, L, tpy);
+                  }
+                  
+                  avatarCtx.restore();
                   
                   // Signal new frame
                   if (videoTrack && videoTrack.requestFrame) {
@@ -471,12 +510,14 @@ class Live2DCanvas {
     }
   }
 
-  async setStatus(status) {
+  async setStatus(status, transcript, stats) {
     if (!this.meetPage) return;
     try {
-      await this.meetPage.evaluate((s) => {
+      await this.meetPage.evaluate((s, t, st) => {
         if (window.__setJarvisStatus) window.__setJarvisStatus(s);
-      }, status);
+        if (t) window.__lastTranscript = t;
+        if (st) Object.assign(window.__hudStats || {}, st);
+      }, status, transcript || null, stats || null);
     } catch(e) {}
   }
 

@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     dbus \
     libegl1-mesa \
+    libswiftshader-vk \
     curl \
+    xdotool \
     && pip3 install --break-system-packages edge-tts \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,6 +33,8 @@ RUN chmod +x scripts/*.sh
 
 COPY src/ ./src/
 COPY public/ ./public/
+
+RUN mkdir -p /data/meetings
 
 EXPOSE 3300
 

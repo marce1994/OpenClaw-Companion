@@ -1,5 +1,5 @@
 const config = {
-  whisperUrl: process.env.WHISPER_URL || 'http://127.0.0.1:9000/asr',
+  whisperUrl: process.env.WHISPER_URL || 'http://127.0.0.1:9000',
   whisperLang: process.env.WHISPER_LANG || 'es',
   gatewayWsUrl: process.env.GATEWAY_WS_URL || 'ws://127.0.0.1:18789',
   gatewayToken: process.env.GATEWAY_TOKEN || '',
@@ -23,7 +23,7 @@ const config = {
   calendarJoinBeforeSec: parseInt(process.env.CALENDAR_JOIN_BEFORE_SEC || '60', 10),
   // VAD
   vadThreshold: parseFloat(process.env.VAD_THRESHOLD || '0.01'),
-  vadChunkMs: parseInt(process.env.VAD_CHUNK_MS || '2500', 10),
+  vadChunkMs: parseInt(process.env.VAD_CHUNK_MS || '1500', 10),
   // Hallucination filter
   hallucinationPatterns: [
     /^\.+$/,

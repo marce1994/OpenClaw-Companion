@@ -23,11 +23,23 @@ const calendar = new CalendarSync();
 
 // --- Wire up events ---
 transcriber.on('transcript', (entry) => {
-  memory.addEntry(entry);
-  // Show thinking while AI processes
-  if (config.live2dEnabled && live2d.active) {
-    live2d.setStatus('thinking');
+  // Prefer Meet UI speaker detection over Resemblyzer
+  const meetSpeakers = meetJoiner.getActiveSpeakers();
+  if (meetSpeakers.length === 1) {
+    // Single speaker — high confidence attribution
+    entry.speaker = meetSpeakers[0].name;
+  } else if (meetSpeakers.length > 1) {
+    // Multiple speakers — list them
+    entry.speaker = meetSpeakers.map(s => s.name).join('+');
   }
+  // Fallback: keep Resemblyzer result (entry.speaker from transcriber)
+  
+  memory.addEntry(entry);
+  if (config.live2dEnabled && live2d.active) {
+    live2d.setStatus('thinking', `[${entry.speaker || '?'}]: ${entry.text}`, 
+      { sttMs: entry.sttMs || 0 });
+  }
+  aiResponder._sttLatency = entry.sttMs || 0;
   aiResponder.onTranscript(entry);
 });
 
@@ -74,8 +86,9 @@ aiResponder.on('skip', () => {
   }
 });
 
-aiResponder.on('speaking-start', () => {
+aiResponder.on('speaking-start', (stats) => {
   if (config.live2dEnabled && meetJoiner.page && live2d.active) {
+    live2d.setStatus('speaking', null, stats);
     live2d.startSpeaking();
   }
 });
@@ -94,6 +107,23 @@ meetJoiner.on('meeting-ended', async () => {
   if (filePath) {
     console.log(LOG, `Transcript saved: ${filePath}`);
   }
+});
+
+// Auto-leave when alone for 5 minutes
+meetJoiner.on('auto-leave', async () => {
+  console.log(LOG, 'Auto-leaving (alone in meeting)');
+  await stopPipeline();
+  calendar.onMeetingEnded();
+  const filePath = await memory.endMeeting();
+  if (filePath) {
+    console.log(LOG, `Transcript saved: ${filePath}`);
+  }
+});
+
+// Active speaker detection from Meet UI (blue border)
+meetJoiner.on('active-speakers', (speakers) => {
+  const names = speakers.map(s => s.name).join(', ');
+  console.log(LOG, `Speaking: ${names}`);
 });
 
 // --- Calendar auto-join ---
@@ -238,6 +268,32 @@ const server = http.createServer(async (req, res) => {
       });
 
       return respond(res, 202, { status: 'leaving' });
+    }
+
+    // Unmute: send Ctrl+D to Meet page
+    if (method === 'POST' && url.pathname === '/unmute') {
+      const page = meetJoiner.page;
+      if (!page) return respond(res, 400, { error: 'Not in a meeting' });
+      try {
+        await page.keyboard.down('Control');
+        await page.keyboard.press('KeyD');
+        await page.keyboard.up('Control');
+        return respond(res, 200, { status: 'unmute sent' });
+      } catch (e) {
+        return respond(res, 500, { error: e.message });
+      }
+    }
+
+    // Reset speakers
+    if (method === 'POST' && url.pathname === '/reset-speakers') {
+      try {
+        const speakerUrl = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
+        const r = await fetch(speakerUrl + '/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await r.json();
+        return respond(res, 200, data);
+      } catch (e) {
+        return respond(res, 500, { error: e.message });
+      }
     }
 
     respond(res, 404, { error: 'Not found' });
