@@ -344,6 +344,25 @@ class Live2DCanvas {
               }
             });
             
+            // === EMOJI BUBBLE SYSTEM ===
+            const emotionEmojis = {
+              happy: '😄', laughing: '😂', thinking: '🤔', confused: '😵',
+              sad: '😢', love: '❤️', angry: '😤', surprised: '😮'
+            };
+            window.__emojiBubbles = [];
+            window.__spawnEmojiBubble = function(emotion) {
+              const emoji = emotionEmojis[emotion];
+              if (!emoji) return;
+              window.__emojiBubbles.push({
+                emoji,
+                x: 280 + Math.random() * 80, // center-top area
+                y: 180,
+                startTime: performance.now(),
+                duration: 2500,
+                wobbleOffset: Math.random() * Math.PI * 2
+              });
+            };
+            
             // Status icons map
             const statusIcons = {
               'idle': '😴 Idle',
@@ -444,6 +463,23 @@ class Live2DCanvas {
                     avatarCtx.fillText(displayText, L, tpy);
                   }
                   
+                  // --- Emoji Bubbles ---
+                  const now = performance.now();
+                  const bubbles = window.__emojiBubbles;
+                  for (let i = bubbles.length - 1; i >= 0; i--) {
+                    const b = bubbles[i];
+                    const elapsed = now - b.startTime;
+                    if (elapsed > b.duration) { bubbles.splice(i, 1); continue; }
+                    const t = elapsed / b.duration; // 0→1
+                    const bx = b.x + Math.sin(t * Math.PI * 4 + b.wobbleOffset) * 20;
+                    const by = b.y - t * 160; // float upward
+                    const alpha = 1 - t;
+                    avatarCtx.globalAlpha = alpha;
+                    avatarCtx.font = '46px serif';
+                    avatarCtx.fillText(b.emoji, bx, by);
+                  }
+                  avatarCtx.globalAlpha = 1;
+                  
                   avatarCtx.restore();
                   
                   // Signal new frame
@@ -518,6 +554,15 @@ class Live2DCanvas {
         if (t) window.__lastTranscript = t;
         if (st) Object.assign(window.__hudStats || {}, st);
       }, status, transcript || null, stats || null);
+    } catch(e) {}
+  }
+
+  async setEmotion(emotion) {
+    if (!this.meetPage) return;
+    try {
+      await this.meetPage.evaluate((e) => {
+        if (window.__spawnEmojiBubble) window.__spawnEmojiBubble(e);
+      }, emotion);
     } catch(e) {}
   }
 

@@ -1,15 +1,22 @@
 package com.openclaw.companion.live2d
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.GLUtils
 import android.util.AttributeSet
 import android.util.Log
+import android.widget.FrameLayout
+import kotlin.math.sin
 import com.live2d.sdk.cubism.framework.CubismFramework
 import com.live2d.sdk.cubism.framework.CubismFrameworkConfig
 import com.live2d.sdk.cubism.framework.math.CubismMatrix44
@@ -120,11 +127,31 @@ class Live2DView @JvmOverloads constructor(
         }
     }
 
+    // Emoji bubble overlay reference
+    private var bubbleOverlay: EmojiBubbleOverlay? = null
+
     fun setEmotion(emotion: String) {
         currentEmotion = emotion
         queueEvent {
             lAppModel?.setEmotion(emotion)
         }
+        // Spawn emoji bubble on the overlay
+        bubbleOverlay?.spawnBubble(emotion)
+    }
+
+    /**
+     * Attach an emoji bubble overlay on top of this view.
+     * Call after this view has been added to a FrameLayout parent.
+     */
+    fun attachBubbleOverlay() {
+        val parent = parent as? ViewGroup ?: return
+        val overlay = EmojiBubbleOverlay(context)
+        overlay.layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        parent.addView(overlay)
+        bubbleOverlay = overlay
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -365,5 +392,89 @@ class Live2DView @JvmOverloads constructor(
             lAppModel = null
             // Don't dispose framework — it's a singleton, will be reused on next Activity
         }
+    }
+}
+
+/**
+ * Transparent overlay view that renders floating emoji bubbles.
+ * Drawn on a standard Android Canvas on top of the GLSurfaceView.
+ */
+class EmojiBubbleOverlay @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null
+) : View(context, attrs) {
+
+    companion object {
+        private val EMOTION_EMOJIS = mapOf(
+            "happy" to "😄", "laughing" to "😂", "thinking" to "🤔", "confused" to "😵",
+            "sad" to "😢", "love" to "❤️", "angry" to "😤", "surprised" to "😮"
+        )
+        private const val BUBBLE_DURATION_MS = 2500L
+        private const val EMOJI_SIZE_SP = 44f
+    }
+
+    private data class Bubble(
+        val emoji: String,
+        val startX: Float,
+        val startY: Float,
+        val startTime: Long,
+        val wobbleOffset: Float
+    )
+
+    private val bubbles = mutableListOf<Bubble>()
+    private val emojiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = EMOJI_SIZE_SP * resources.displayMetrics.scaledDensity
+    }
+    private var animator: ValueAnimator? = null
+
+    fun spawnBubble(emotion: String) {
+        val emoji = EMOTION_EMOJIS[emotion] ?: return
+        post {
+            val cx = width / 2f + (Math.random().toFloat() - 0.5f) * width * 0.2f
+            val cy = height * 0.4f
+            bubbles.add(Bubble(emoji, cx, cy, System.currentTimeMillis(), (Math.random() * Math.PI * 2).toFloat()))
+            ensureAnimating()
+        }
+    }
+
+    private fun ensureAnimating() {
+        if (animator?.isRunning == true) return
+        animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = BUBBLE_DURATION_MS
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener { invalidate() }
+            start()
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (bubbles.isEmpty()) {
+            animator?.cancel()
+            animator = null
+            return
+        }
+        val now = System.currentTimeMillis()
+        val iter = bubbles.iterator()
+        while (iter.hasNext()) {
+            val b = iter.next()
+            val elapsed = now - b.startTime
+            if (elapsed > BUBBLE_DURATION_MS) { iter.remove(); continue }
+            val t = elapsed.toFloat() / BUBBLE_DURATION_MS
+            val x = b.startX + sin((t * Math.PI * 4 + b.wobbleOffset).toDouble()).toFloat() * 30f
+            val y = b.startY - t * height * 0.35f
+            emojiPaint.alpha = ((1f - t) * 255).toInt().coerceIn(0, 255)
+            canvas.drawText(b.emoji, x, y, emojiPaint)
+        }
+        if (bubbles.isEmpty()) {
+            animator?.cancel()
+            animator = null
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        animator?.cancel()
+        animator = null
     }
 }
