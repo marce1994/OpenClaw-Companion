@@ -61,7 +61,7 @@ class AIResponder extends EventEmitter {
     // Transcript batching
     this.batchBuffer = [];
     this.batchTimer = null;
-    this.batchWindowMs = 10000;
+    this.batchWindowMs = 5000;
     
     // Session key for filtering events
     this._sessionKey = null;

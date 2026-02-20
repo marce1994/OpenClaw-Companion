@@ -42,13 +42,13 @@ class Live2DCanvas {
       ctx.fillStyle = '#1a1a2e';
       ctx.fillRect(0, 0, 640, 360);
       window.__avatarCanvas = avatarCanvas;
-      // captureStream(0) = manual frame control via requestFrame()
-      window.__avatarStream = avatarCanvas.captureStream(0);
+      // captureStream(30) = 30fps fixed framerate for smooth WebRTC video
+      window.__avatarStream = avatarCanvas.captureStream(30);
       window.__avatarTrack = window.__avatarStream.getVideoTracks()[0];
       window.__avatarWriter = null;
       window.__avatarReady = false;
       window.__meetPeerConnections = [];
-      console.log('[Live2D-Override] Avatar canvas 640x360 + captureStream(0) created');
+      console.log('[Live2D-Override] Avatar canvas 640x360 + captureStream(30) created');
 
       // Override getUserMedia
       const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
