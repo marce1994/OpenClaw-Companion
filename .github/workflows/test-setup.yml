@@ -26,7 +26,7 @@ jobs:
       - name: Verify files exist
         run: |
           echo "=== Checking required files ==="
-          for f in server/Dockerfile server/docker-compose.yml server/setup.sh server/.env.example server/start.sh server/package.json server/index.js server/speaker_service.py; do
+          for f in server/Dockerfile docker-compose.yml server/setup.sh .env.example server/start.sh server/package.json server/index.js server/speaker_service.py; do
             if [ -f "$f" ]; then
               echo "✅ $f"
             else
@@ -44,7 +44,6 @@ jobs:
 
       - name: Generate .env (simulating setup.sh)
         run: |
-          cd server
           cat > .env << 'EOF'
           GATEWAY_WS_URL=ws://127.0.0.1:18789
           GATEWAY_TOKEN=test-token-for-ci
@@ -70,19 +69,16 @@ jobs:
 
       - name: Validate docker-compose.yml
         run: |
-          cd server
           docker compose config > /dev/null
           echo "✅ docker-compose.yml is valid"
 
       - name: Build voice server image
         run: |
-          cd server
           docker compose build voice-server
           echo "✅ Voice server image built"
 
       - name: Start services
         run: |
-          cd server
           docker compose up -d
           echo "✅ Services starting..."
 
@@ -132,7 +128,6 @@ jobs:
       - name: Show service status
         if: always()
         run: |
-          cd server
           echo "=== Container Status ==="
           docker compose ps -a
           echo ""
@@ -145,7 +140,6 @@ jobs:
       - name: Cleanup voice server
         if: always()
         run: |
-          cd server
           docker compose down -v 2>/dev/null || true
 
   test-meet-bot:

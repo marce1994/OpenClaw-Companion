@@ -12,9 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     dbus \
     libegl1-mesa \
-    libswiftshader-vk \
     curl \
     xdotool \
+    && (apt-get install -y --no-install-recommends libswiftshader-vk 2>/dev/null || true) \
     && pip3 install --break-system-packages edge-tts \
     && rm -rf /var/lib/apt/lists/*
 
