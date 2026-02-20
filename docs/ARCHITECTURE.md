@@ -16,7 +16,9 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 │  │  • PTT voice │   │  • PTT voice │   │  • Live2D avatar as camera   │    │
 │  │  • Smart     │   │  • Smart     │   │  • Bilingual EN/ES           │    │
 │  │    Listen    │   │    Listen    │   │  • Calendar auto-join        │    │
-│  │  • Text chat │   │  • Text chat │   │  • Respond when mentioned    │    │
+│  │  • Text chat │   │  • Text chat │   │  • Speaker detection         │    │
+│  │  • 📱 Device │   │              │   │  • Transcript batching       │    │
+│  │    commands  │   │              │   │  • Meeting memory export     │    │
 │  └──────┬───────┘   └──────┬───────┘   └──────────────┬──────────────┘    │
 │         │                  │                           │                    │
 │         └────────┬─────────┘                           │                    │
@@ -34,18 +36,22 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 │  │  • Barge-in & cancellation             │             │                    │
 │  │  • Conversation history (10 exchanges) │             │                    │
 │  │  • Auto web search injection           │             │                    │
+│  │  • 🔊 Auto noise detection (quiet/     │             │                    │
+│  │    noisy profiles with hysteresis)     │             │                    │
+│  │  • 📱 Device command bridge (GPS,      │             │                    │
+│  │    camera, system info, BT car mic)    │             │                    │
 │  └──────┬─────────┬────────────┬──────────┘             │                    │
 │         │         │            │                        │                    │
 │         ▼         ▼            ▼                        │                    │
 │  ┌──────────┐ ┌─────────┐ ┌──────────────┐             │                    │
-│  │ Speaker  │ │Speaches │ │ TTS Engine   │◄────────────┘                    │
-│  │ ID :3201 │ │ STT     │ │ Kokoro :5004 │ (shared by meet bot)            │
+│  │ Speaker  │ │whisper- │ │ TTS Engine   │◄────────────┘                    │
+│  │ ID :3201 │ │fast STT │ │ Kokoro :5004 │ (shared by meet bot)            │
 │  │ +Search  │ │ :9000   │ │ Edge (cloud) │                                 │
 │  └──────────┘ └─────────┘ └──────────────┘                                  │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  OpenClaw Gateway                                                    │    │
-│  │  WS: native protocol | → LLM (Claude, GPT, Gemini, Ollama, etc.)    │    │
+│  │  OpenClaw Gateway (WS native protocol v3)                            │    │
+│  │  → LLM (Claude, GPT, Gemini, Ollama, etc.)                          │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -54,17 +60,69 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 
 | Service | Container | Image | Ports | GPU | Notes |
 |---------|-----------|-------|-------|-----|-------|
-| `voice-server` | Build `./server` | — | 3200 (host network) | No | Node.js + Python (speaker ID on :3201) |
-| `speaches-stt` | `ghcr.io/speaches-ai/speaches` | latest-cuda / latest | 9000→8000 | Yes (optional) | faster-whisper, OpenAI-compatible API |
-| `kokoro-tts` | `ghcr.io/remsky/kokoro-fastapi` | latest-gpu / latest-cpu | 5004→8880 | Yes (optional) | ~330ms latency, OpenAI-compatible |
-| `meet-bot` | Build `./meet-bot` | — | 3300 (host network) | No | Profile: `meet` |
-| `diarizer` | Build `./diarizer` | — | 3202 | Yes | Profile: `diarizer` |
+| `voice-server` | `openclaw-voice-server` | Build `./server` | 3200, 3443 (host network) | No | Node.js + Python speaker ID on :3201 |
+| `whisper-fast` | `whisper-fast` | `ghcr.io/speaches-ai/speaches:latest-cuda` | 9000→9000 | Yes (optional) | Custom minimal Python server wrapping faster-whisper. Replaces Speaches' default FastAPI; no Gradio overhead. GPU ~239ms, CPU ~2-3s per utterance. Model: `faster-whisper-large-v3-turbo` |
+| `kokoro-tts` | `kokoro-fastapi` | `ghcr.io/remsky/kokoro-fastapi:latest-gpu` | 5004→8880 | Yes (optional) | ~330ms latency, OpenAI-compatible `/v1/audio/speech` API |
+| `meet-bot` | `meet-bot` | Build `./meet-bot` | 3300 (host network) | No | Profile: `meet`. Puppeteer + PulseAudio + Live2D |
+| `diarizer` | Build `./diarizer` | — | 3202 | Yes | Profile: `diarizer`. Pyannote-based speaker diarization |
+
+### whisper-fast Server
+
+Custom minimal Python HTTP server (`whisper-server/server.py`) that replaces the default Speaches FastAPI app. Mounted as a volume into the Speaches container image (which provides the faster-whisper runtime and CUDA libs). Features:
+
+- OpenAI-compatible `/v1/audio/transcriptions` endpoint (verbose_json with segments)
+- Language restriction to ES/EN only (auto-detect within those two)
+- No FastAPI/Gradio/Swagger overhead — plain `http.server` for minimal latency
+- Model: `Systran/faster-whisper-large-v3-turbo` cached locally, `HF_HUB_OFFLINE=1`
+
+## Device Capabilities
+
+The Android app reports device capabilities on connect. The voice server bridges these to the OpenClaw Gateway as tool calls:
+
+- **System info** — battery, connectivity, storage
+- **GPS location** — current coordinates
+- **Camera** — take photos from front/back camera
+- **Bluetooth car mic** — detect BT audio source for car mode
+
+## Emoji Bubble Reactions
+
+The LLM output includes `[[emotion:X]]` tags that control the Live2D avatar's facial expressions. Nine emotions supported: `happy`, `sad`, `surprised`, `thinking`, `confused`, `laughing`, `neutral`, `angry`, `love`.
+
+Extraction pipeline:
+1. LLM streams tokens → server detects `[[emotion:X]]` tags
+2. Tags are extracted and sent as separate `emotion` field in `reply_chunk` / `audio_chunk`
+3. Fallback: keyword-based emotion detection from Spanish text if LLM doesn't tag
+4. Client animates Live2D model parameters based on emotion
+
+## Car Mode / Noise Detection
+
+Auto noise detection tracks ambient RMS over a 30-second rolling window with hysteresis:
+
+- **Quiet → Noisy**: avg RMS > 500 (e.g., car engine, road noise)
+- **Noisy → Quiet**: avg RMS < 300 sustained for 15+ seconds
+- **Noisy profile effects**:
+  - Require 4+ words in ambient transcripts (vs 3 in quiet)
+  - Stricter Whisper confidence threshold: `avg_logprob < -0.5` (vs `-0.6`)
+  - Smart Listen only responds to explicit bot name mentions (no opinion_request, wake_phrase, or question triggers)
+  - Language filtering: only ES/EN accepted (rejects phantom detections)
+- Profile switches are logged for debugging
+
+## Gateway WebSocket Integration
+
+The voice server connects to the OpenClaw Gateway via native WebSocket protocol v3:
+
+1. Server connects to `GATEWAY_WS_URL`, receives `connect.challenge`
+2. Sends `connect` with operator role and auth token
+3. On `hello-ok`, sends `chat.send` RPCs with user messages
+4. Streams `agent` events (lifecycle start → assistant deltas → lifecycle end)
+5. Supports image attachments via base64 (auto-resized to fit 512KB WS frames)
+6. Falls back to HTTP SSE `/v1/chat/completions` if WS is disabled
 
 ## Component Details
 
 ### Google Meet Bot (Node.js + Puppeteer)
 
-Joins Google Meet calls as a participant with an animated Live2D avatar.
+Joins Google Meet calls as a participant with an animated Live2D avatar. Features Live2D camera injection, speaker detection, transcript batching, and meeting memory export.
 
 **Modules:**
 - `meet-joiner.js` — Puppeteer browser automation. Launches Chromium on Xvfb, navigates to Meet, enters name, clicks join, handles admission wait, detects meeting end.

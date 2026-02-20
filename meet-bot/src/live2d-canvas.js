@@ -34,13 +34,13 @@ class Live2DCanvas {
 
     await page.evaluateOnNewDocument(() => {
       // Create a shared canvas for Live2D rendering — captureStream is more reliable than VideoFrame
-      // Use 640x360 canvas — smaller = faster WebRTC encoding = higher delivered FPS
+      // Use 480x270 canvas — smaller = faster WebRTC encoding = higher delivered FPS
       const avatarCanvas = document.createElement('canvas');
-      avatarCanvas.width = 640;
-      avatarCanvas.height = 360;
+      avatarCanvas.width = 480;
+      avatarCanvas.height = 270;
       const ctx = avatarCanvas.getContext('2d');
       ctx.fillStyle = '#1a1a2e';
-      ctx.fillRect(0, 0, 640, 360);
+      ctx.fillRect(0, 0, 480, 270);
       window.__avatarCanvas = avatarCanvas;
       // captureStream(30) = 30fps fixed framerate for smooth WebRTC video
       window.__avatarStream = avatarCanvas.captureStream(30);
@@ -48,7 +48,7 @@ class Live2DCanvas {
       window.__avatarWriter = null;
       window.__avatarReady = false;
       window.__meetPeerConnections = [];
-      console.log('[Live2D-Override] Avatar canvas 640x360 + captureStream(30) created');
+      console.log('[Live2D-Override] Avatar canvas 480x270 + captureStream(30) created');
 
       // Override getUserMedia
       const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
@@ -196,8 +196,8 @@ class Live2DCanvas {
             
             // Create hidden canvas for rendering
             const canvas = document.createElement('canvas');
-            canvas.width = 640;
-            canvas.height = 360;
+            canvas.width = 480;
+            canvas.height = 270;
             canvas.style.display = 'none';
             document.body.appendChild(canvas);
             window.__live2dCanvas = canvas;
@@ -205,8 +205,8 @@ class Live2DCanvas {
             // Create PIXI application
             const app = new PIXI.Application({
               view: canvas,
-              width: 640,
-              height: 360,
+              width: 480,
+              height: 270,
               backgroundColor: 0x1a1a2e,
               autoStart: true,
               antialias: true,
@@ -315,11 +315,11 @@ class Live2DCanvas {
             console.log('[Live2D-Render] Model loaded, dimensions:', model.width, 'x', model.height, 'cubism2:', isCubism2);
             
             // Scale to fit canvas
-            const scale = Math.min(640 / model.width, 360 / model.height) * 0.9;
+            const scale = Math.min(480 / model.width, 270 / model.height) * 0.9;
             model.scale.set(scale);
-            model.x = 40;
-            model.y = 230;
-            console.log('[Live2D-Render] Positioned: scale=' + scale.toFixed(3) + ' x=40 y=230 (640x360)');
+            model.x = 30;
+            model.y = 170;
+            console.log('[Live2D-Render] Positioned: scale=' + scale.toFixed(3) + ' x=40 y=230 (480x270)');
             
             // Status tracking — drawn directly on avatar canvas each frame
             window.__jarvisStatus = 'idle';
@@ -355,8 +355,8 @@ class Live2DCanvas {
               if (!emoji) return;
               window.__emojiBubbles.push({
                 emoji,
-                x: 280 + Math.random() * 80, // center-top area
-                y: 180,
+                x: 200 + Math.random() * 80, // center-top area
+                y: 130,
                 startTime: performance.now(),
                 duration: 2500,
                 wobbleOffset: Math.random() * Math.PI * 2
@@ -398,7 +398,7 @@ class Live2DCanvas {
               try {
                 if (avatarCtx) {
                   // Draw Live2D output
-                  avatarCtx.drawImage(canvas, 0, 0, 640, 360);
+                  avatarCtx.drawImage(canvas, 0, 0, 480, 270);
                   
                   // === HUD OVERLAY ===
                   const status = window.__jarvisStatus || 'idle';
@@ -436,7 +436,7 @@ class Live2DCanvas {
                     
                     const lineH = 16;
                     const boxW = 130;
-                    const boxX = 640 - L - boxW;
+                    const boxX = 480 - L - boxW;
                     const boxY = 20;
                     const boxH = lines.length * lineH + 8;
                     avatarCtx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -450,13 +450,13 @@ class Live2DCanvas {
                   // --- Bottom: Last transcript ---
                   if (transcript) {
                     avatarCtx.font = '14px Arial, sans-serif';
-                    const maxW = 520;
+                    const maxW = 380;
                     let displayText = transcript;
                     while (avatarCtx.measureText(displayText).width > maxW && displayText.length > 10) {
                       displayText = '...' + displayText.substring(4);
                     }
                     const ttw = avatarCtx.measureText(displayText).width;
-                    const tpy = 290;
+                    const tpy = 220;
                     avatarCtx.fillStyle = 'rgba(0,0,0,0.5)';
                     avatarCtx.fillRect(L - 5, tpy - 14, ttw + 10, 20);
                     avatarCtx.fillStyle = '#e0e0e0';
@@ -491,7 +491,7 @@ class Live2DCanvas {
                 frameCount++;
                 if (frameCount % 300 === 0) {
                   const elapsed = (performance.now() - startTime) / 1000;
-                  console.log('[Live2D-Render] ' + frameCount + ' frames, ~' + Math.round(frameCount / elapsed) + 'fps (captureStream 640x360)');
+                  console.log('[Live2D-Render] ' + frameCount + ' frames, ~' + Math.round(frameCount / elapsed) + 'fps (captureStream 480x270)');
                 }
               } catch(e) {}
               requestAnimationFrame(renderLoop);

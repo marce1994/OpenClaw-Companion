@@ -63,6 +63,11 @@ class AIResponder extends EventEmitter {
     this.batchTimer = null;
     this.batchWindowMs = 5000;
     
+    // Context truncation — rolling summary
+    this.totalTranscriptCount = 0;
+    this.rollingSummary = '';  // 2-line summary of older context
+    this.summaryInterval = 50; // Generate summary every N new transcripts
+    
     // Session key for filtering events
     this._sessionKey = null;
     
@@ -250,8 +255,16 @@ class AIResponder extends EventEmitter {
 
   onTranscript(entry) {
     this.recentTranscripts.push(entry);
+    this.totalTranscriptCount++;
+    
+    // Keep only last 20 transcripts in memory
     if (this.recentTranscripts.length > this.maxContext) {
       this.recentTranscripts.shift();
+    }
+    
+    // Every 50 transcripts, generate a rolling summary of older context
+    if (this.totalTranscriptCount % this.summaryInterval === 0 && this.totalTranscriptCount > 0) {
+      this._generateRollingSummary();
     }
 
     // Use Whisper's language detection
@@ -312,11 +325,47 @@ class AIResponder extends EventEmitter {
     this._respondProactive(combined, false, true);
   }
 
+  _generateRollingSummary() {
+    if (this.processing || !this.connected) return;
+    
+    // Use the current recent transcripts to build a summary of what's been discussed
+    const transcript = this.recentTranscripts.map(t => `[${t.speaker || 'Unknown'}]: ${t.text}`).join('\n');
+    const oldSummary = this.rollingSummary ? `Previous context: ${this.rollingSummary}\n` : '';
+    
+    const prompt = `${oldSummary}Recent conversation:\n${transcript}\n\nSummarize the conversation so far in exactly 2 lines. Include key topics, decisions, and who said what. Be concise. Reply with ONLY the 2-line summary, nothing else.`;
+    
+    console.log(LOG, `Generating rolling summary (${this.totalTranscriptCount} total transcripts)...`);
+    
+    // Send as a non-blocking summary request
+    const id = this._nextId();
+    this.pendingRequests.set(id, {
+      resolve: (payload) => {
+        if (payload?.text && payload.text.trim() !== 'SKIP') {
+          this.rollingSummary = payload.text.trim();
+          console.log(LOG, `Rolling summary updated: "${this.rollingSummary.substring(0, 100)}..."`);
+        }
+      },
+      timeout: setTimeout(() => { this.pendingRequests.delete(id); }, 30000),
+    });
+
+    this._send({
+      type: 'req',
+      id,
+      method: 'chat.send',
+      params: {
+        sessionKey: `${config.gwSessionKey}-summary`,
+        message: prompt,
+        idempotencyKey: require('crypto').randomUUID(),
+      },
+    });
+  }
+
   _respondProactive(transcriptText, nameMentioned = false, isBatched = false) {
     if (this.processing) return;
     this.processing = true;
 
     const context = this.recentTranscripts.slice(-10).map(t => `[${t.speaker || 'Unknown'}]: ${t.text}`).join('\n');
+    const summaryContext = this.rollingSummary ? `\nResumen previo de la conversación:\n${this.rollingSummary}\n` : '';
 
     const nameHint = nameMentioned
       ? `Your name ("${config.botName}") was mentioned — they're likely addressing you directly. Respond helpfully. `
@@ -339,7 +388,7 @@ class AIResponder extends EventEmitter {
         + `Si la conversación no te necesita, respondé EXACTAMENTE "SKIP" y nada más.`;
 
     const lastLine = isBatched ? `Batch de transcripciones recientes:\n${transcriptText}` : `Último: "${transcriptText}"`;
-    const prompt = `${langInstruction}\n\nContexto reciente:\n${context}\n\n${lastLine}`;
+    const prompt = `${langInstruction}\n${summaryContext}\nContexto reciente:\n${context}\n\n${lastLine}`;
 
     this._sendChat(prompt);
   }

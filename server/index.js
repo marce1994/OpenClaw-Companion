@@ -266,12 +266,14 @@ async function transcribe(audio) {
         }
         
         // Filter by confidence (verbose_json has segments with avg_logprob)
+        // In noisy profile, use stricter threshold (-0.5 vs -0.6)
         if (parsed.segments && parsed.segments.length > 0) {
           const seg = parsed.segments[0];
           const logprob = seg.avg_logprob ?? 0;
           const noSpeech = seg.no_speech_prob ?? 0;
-          if (logprob < -0.6) {
-            console.log(`🚫 Low confidence filtered: "${text}" (logprob=${logprob.toFixed(2)})`);
+          const logprobThreshold = isNoisyProfile() ? -0.5 : -0.6;
+          if (logprob < logprobThreshold) {
+            console.log(`🚫 Low confidence filtered: "${text}" (logprob=${logprob.toFixed(2)}, threshold=${logprobThreshold}, noise=${noiseTracker.profile})`);
             return '';
           }
           if (noSpeech > 0.5) {
@@ -1311,12 +1313,19 @@ async function handleAudio(ws, audioBase64, prefix) {
 
 // ─── Smart Listen (Ambient) Mode ────────────────────────────────────────────
 
-/** Determine if ambient speech should trigger a response based on wake words/patterns */
+/** Determine if ambient speech should trigger a response based on wake words/patterns.
+ *  In noisy mode, only respond to clear name mentions — not opinion_request or owner triggers. */
 function shouldRespond(text, botName) {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const name = botName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const noisy = isNoisyProfile();
 
+  // Name mentions always trigger, even in noisy mode
   if (t.includes(name)) return { respond: true, reason: 'name' };
+
+  // In noisy mode, ONLY respond to explicit name mentions
+  if (noisy) return { respond: false, reason: 'noisy_filter' };
+
   if (/(?:^|\s)(oye?|che|ey|hey|hola|escucha|decime|contame|explicame|ayudame)/i.test(t) && t.length < 80) {
     return { respond: true, reason: 'wake_phrase' };
   }
@@ -1335,12 +1344,16 @@ function shouldRespond(text, botName) {
 // requests are independent. No special coordination needed beyond the profile reset.
 
 // P2-11: Auto noise detection — track ambient audio energy to auto-adjust thresholds
+// Enhanced: 30-second rolling window, hysteresis (500 up / 300 down for 15s), noise profile
 const noiseTracker = {
-  samples: [],           // recent RMS values
-  maxSamples: 50,        // ~50 segments worth of data
+  samples: [],           // { rms, time } entries
+  windowMs: 30000,       // 30-second rolling window
   baselineRms: 0,        // running average ambient noise level
-  highNoiseThreshold: 800, // if baseline > this, we're in a noisy environment
-  isNoisy: false,
+  profile: 'quiet',      // 'quiet' or 'noisy'
+  noisyThreshold: 500,   // switch to noisy when avg RMS > 500
+  quietThreshold: 300,   // switch to quiet when avg RMS < 300 for 15s
+  quietSinceMs: null,    // timestamp when RMS first dropped below quietThreshold
+  quietHoldMs: 15000,    // must stay below threshold for 15 seconds
 };
 
 function updateNoiseBaseline(audioBuffer) {
@@ -1351,22 +1364,45 @@ function updateNoiseBaseline(audioBuffer) {
     sum += sample * sample;
   }
   const rms = Math.sqrt(sum / (audioBuffer.length / 2));
+  const now = Date.now();
   
-  noiseTracker.samples.push(rms);
-  if (noiseTracker.samples.length > noiseTracker.maxSamples) {
-    noiseTracker.samples.shift();
-  }
+  noiseTracker.samples.push({ rms, time: now });
+  // Trim to 30-second window
+  const cutoff = now - noiseTracker.windowMs;
+  noiseTracker.samples = noiseTracker.samples.filter(s => s.time > cutoff);
   
-  const avg = noiseTracker.samples.reduce((a, b) => a + b, 0) / noiseTracker.samples.length;
-  const wasNoisy = noiseTracker.isNoisy;
+  const avg = noiseTracker.samples.reduce((a, s) => a + s.rms, 0) / noiseTracker.samples.length;
+  const prevProfile = noiseTracker.profile;
   noiseTracker.baselineRms = avg;
-  noiseTracker.isNoisy = avg > noiseTracker.highNoiseThreshold;
   
-  if (noiseTracker.isNoisy !== wasNoisy) {
-    console.log(`🔊 Noise environment changed: ${noiseTracker.isNoisy ? 'NOISY' : 'quiet'} (baseline RMS: ${avg.toFixed(0)})`);
+  if (noiseTracker.profile === 'quiet') {
+    // Switch to noisy if avg exceeds threshold
+    if (avg > noiseTracker.noisyThreshold) {
+      noiseTracker.profile = 'noisy';
+      noiseTracker.quietSinceMs = null;
+      console.log(`🔊 Noise profile: quiet → NOISY (avg RMS: ${avg.toFixed(0)}). Stricter filtering active.`);
+    }
+  } else {
+    // In noisy mode: switch back to quiet only after RMS < 300 for 15+ seconds
+    if (avg < noiseTracker.quietThreshold) {
+      if (!noiseTracker.quietSinceMs) {
+        noiseTracker.quietSinceMs = now;
+      } else if (now - noiseTracker.quietSinceMs >= noiseTracker.quietHoldMs) {
+        noiseTracker.profile = 'quiet';
+        noiseTracker.quietSinceMs = null;
+        console.log(`🔇 Noise profile: noisy → QUIET (avg RMS: ${avg.toFixed(0)}). Normal filtering resumed.`);
+      }
+    } else {
+      noiseTracker.quietSinceMs = null; // Reset hold timer if noise spikes again
+    }
   }
   
-  return { rms, baseline: avg, isNoisy: noiseTracker.isNoisy };
+  return { rms, baseline: avg, isNoisy: noiseTracker.profile === 'noisy' };
+}
+
+/** Check if we're in noisy profile */
+function isNoisyProfile() {
+  return noiseTracker.profile === 'noisy';
 }
 
 // Throttle: only 1 ambient transcription at a time
@@ -1398,7 +1434,7 @@ async function handleAmbientAudio(ws, audioBase64) {
     }
     
     // P2-11: In noisy environments, require longer transcripts to filter false positives
-    const minWords = noiseTracker.isNoisy ? 4 : 3;
+    const minWords = isNoisyProfile() ? 4 : 3;
     const wordCount = text.trim().split(/\s+/).length;
     if (wordCount < minWords) {
       console.log(`🔇 Short ambient filtered (${wordCount} words): "${text}"`);

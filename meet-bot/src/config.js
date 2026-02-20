@@ -21,6 +21,8 @@ const config = {
   calendarIcsUrl: process.env.GOOGLE_CALENDAR_ICS || '',
   calendarRefreshHours: parseInt(process.env.CALENDAR_REFRESH_HOURS || '6', 10),
   calendarJoinBeforeSec: parseInt(process.env.CALENDAR_JOIN_BEFORE_SEC || '60', 10),
+  // Audio recording for debug
+  recordAudio: process.env.RECORD_AUDIO === 'true',
   // VAD
   vadThreshold: parseFloat(process.env.VAD_THRESHOLD || '0.01'),
   vadChunkMs: parseInt(process.env.VAD_CHUNK_MS || '1500', 10),

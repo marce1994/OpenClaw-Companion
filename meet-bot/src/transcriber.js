@@ -1,6 +1,8 @@
 const { EventEmitter } = require('events');
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
 
 const LOG = '[Transcriber]';
@@ -14,6 +16,10 @@ class Transcriber extends EventEmitter {
     this.speakerIdEnabled = process.env.SPEAKER_ID !== 'false';
     this.buffer = Buffer.alloc(0);
     this.active = false;
+    // Audio recording
+    this.recordAudio = config.recordAudio;
+    this.audioChunkIndex = 0;
+    this.meetingId = null;
     this.speechActive = false;
     this.silenceFrames = 0;
     this.SAMPLE_RATE = 16000;
@@ -25,10 +31,31 @@ class Transcriber extends EventEmitter {
     this.consecutiveDuplicates = 0;
   }
 
+  setMeetingId(id) {
+    this.meetingId = id;
+    this.audioChunkIndex = 0;
+    if (this.recordAudio) {
+      const audioDir = path.join(config.meetingsDir, id || 'unknown', 'audio');
+      fs.mkdirSync(audioDir, { recursive: true });
+      console.log(LOG, `Audio recording enabled → ${audioDir}`);
+    }
+  }
+
+  _saveAudioChunk(wavBuffer) {
+    if (!this.recordAudio || !this.meetingId) return;
+    try {
+      const audioDir = path.join(config.meetingsDir, this.meetingId, 'audio');
+      const filename = `chunk-${String(this.audioChunkIndex++).padStart(5, '0')}.wav`;
+      fs.writeFileSync(path.join(audioDir, filename), wavBuffer);
+    } catch (e) {
+      console.error(LOG, 'Failed to save audio chunk:', e.message);
+    }
+  }
+
   start() {
     if (this.active) return;
     this.active = true;
-    console.log(LOG, `Started (threshold=${this.vadThreshold}, chunk=${config.vadChunkMs}ms)`);
+    console.log(LOG, `Started (threshold=${this.vadThreshold}, chunk=${config.vadChunkMs}ms, record=${this.recordAudio})`);
 
     this.audioPipeline.on('audio', (chunk) => this._onAudio(chunk));
   }
@@ -100,6 +127,9 @@ class Transcriber extends EventEmitter {
     try {
       // Build WAV header
       const wavBuffer = this._pcmToWav(audioBuffer, this.SAMPLE_RATE, 1, 16);
+
+      // Save audio chunk for debug if enabled
+      this._saveAudioChunk(wavBuffer);
 
       // Run Whisper + Speaker ID in parallel
       const sttStart = Date.now();

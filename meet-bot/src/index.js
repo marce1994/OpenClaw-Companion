@@ -99,25 +99,52 @@ aiResponder.on('speaking-end', () => {
   }
 });
 
-meetJoiner.on('meeting-ended', async () => {
-  console.log(LOG, 'Meeting ended — cleaning up');
+async function endMeetingWithSummary() {
   await stopPipeline();
   calendar.onMeetingEnded();
+  
+  // Get summary prompt BEFORE ending meeting (which resets entries)
+  const summaryPrompt = memory.getSummaryPrompt();
   const filePath = await memory.endMeeting();
   if (filePath) {
     console.log(LOG, `Transcript saved: ${filePath}`);
   }
+  
+  // Auto-generate and send summary to Telegram via Gateway
+  if (summaryPrompt && aiResponder.connected) {
+    console.log(LOG, 'Generating meeting summary...');
+    try {
+      const crypto = require('crypto');
+      const id = `meet-summary-${crypto.randomUUID().substring(0, 8)}`;
+      aiResponder._send({
+        type: 'req',
+        id,
+        method: 'chat.send',
+        params: {
+          sessionKey: config.gwSessionKey,
+          message: summaryPrompt,
+          idempotencyKey: crypto.randomUUID(),
+        },
+      });
+      console.log(LOG, 'Summary request sent to Gateway');
+    } catch (err) {
+      console.error(LOG, 'Failed to send summary:', err.message);
+    }
+    // Give time for the summary to be sent before disconnecting
+    await new Promise(r => setTimeout(r, 15000));
+    aiResponder.disconnect();
+  }
+}
+
+meetJoiner.on('meeting-ended', async () => {
+  console.log(LOG, 'Meeting ended — cleaning up');
+  await endMeetingWithSummary();
 });
 
 // Auto-leave when alone for 5 minutes
 meetJoiner.on('auto-leave', async () => {
   console.log(LOG, 'Auto-leaving (alone in meeting)');
-  await stopPipeline();
-  calendar.onMeetingEnded();
-  const filePath = await memory.endMeeting();
-  if (filePath) {
-    console.log(LOG, `Transcript saved: ${filePath}`);
-  }
+  await endMeetingWithSummary();
 });
 
 // Active speaker detection from Meet UI (blue border)
@@ -135,7 +162,9 @@ calendar.on('join', async ({ meetLink, event }) => {
 
   console.log(LOG, `Calendar: auto-joining "${event.summary}"`);
   memory.startMeeting(meetLink, event.summary);
-  aiResponder.setMeetingId(extractMeetId(meetLink));
+  const meetId = extractMeetId(meetLink);
+  aiResponder.setMeetingId(meetId);
+  transcriber.setMeetingId(meetId);
 
   meetJoiner.join(meetLink).catch(err => {
     console.error(LOG, 'Calendar auto-join error:', err.message);
@@ -147,8 +176,7 @@ calendar.on('leave', async ({ event }) => {
 
   console.log(LOG, `Calendar: event "${event.summary}" ended — auto-leaving`);
   meetJoiner.leave().then(async () => {
-    const filePath = await memory.endMeeting();
-    if (filePath) console.log(LOG, `Transcript saved: ${filePath}`);
+    await endMeetingWithSummary();
   }).catch(err => {
     console.error(LOG, 'Calendar auto-leave error:', err.message);
   });
@@ -163,8 +191,77 @@ meetJoiner.on('error', (err) => {
   console.error(LOG, 'Meet error:', err.message);
 });
 
-memory.on('meeting-ended', (info) => {
+memory.on('meeting-ended', async (info) => {
   console.log(LOG, `Meeting summary available: ${info.entryCount} entries, duration: ${Math.round(info.duration / 60000)}min`);
+
+  // Auto-generate and send summary via Gateway WS
+  if (info.entryCount > 0 && info.transcript) {
+    try {
+      console.log(LOG, 'Generating auto-summary via AI...');
+      const summaryPrompt = `You are a meeting assistant. Summarize this meeting transcript concisely. Include:\n`
+        + `- Key topics discussed\n- Decisions made\n- Action items (who does what)\n- Duration: ${Math.round(info.duration / 60000)} minutes\n\n`
+        + `Transcript:\n${info.transcript.substring(0, 8000)}\n\n`
+        + `Reply with a clean markdown summary.`;
+
+      const WebSocket = require('ws');
+      const crypto = require('crypto');
+
+      // Use a temporary WS connection if AI responder is disconnected
+      const ws = new WebSocket(config.gatewayWsUrl, {
+        headers: { 'Origin': 'http://127.0.0.1:18789' },
+      });
+
+      ws.on('open', () => {
+        // Wait for challenge then auth
+      });
+
+      let authenticated = false;
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'event' && msg.event === 'connect.challenge') {
+            ws.send(JSON.stringify({
+              type: 'req', id: 'summary-auth',
+              method: 'connect',
+              params: {
+                client: { id: 'meet-bot-summary', displayName: 'Meet Bot Summary', mode: 'backend', version: '1.0.0', platform: 'node' },
+                role: 'operator', scopes: ['operator.admin'],
+                minProtocol: 3, maxProtocol: 3,
+                auth: { token: config.gatewayToken },
+              },
+            }));
+          } else if (msg.type === 'hello-ok' || (msg.type === 'res' && msg.ok && msg.payload?.type === 'hello-ok')) {
+            authenticated = true;
+            // Send summary request
+            ws.send(JSON.stringify({
+              type: 'req', id: 'summary-req',
+              method: 'chat.send',
+              params: {
+                sessionKey: `${config.gwSessionKey}-summary`,
+                message: summaryPrompt,
+                idempotencyKey: crypto.randomUUID(),
+              },
+            }));
+            console.log(LOG, 'Summary request sent to Gateway');
+          } else if (msg.type === 'event' && msg.event === 'agent') {
+            const p = msg.payload || {};
+            if (p.stream === 'assistant' && p.data?.text) {
+              console.log(LOG, `Meeting summary:\n${p.data.text.substring(0, 500)}...`);
+            }
+            if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
+              // Done, close connection
+              setTimeout(() => ws.close(), 1000);
+            }
+          }
+        } catch (e) { /* ignore */ }
+      });
+
+      // Auto-close after 60s
+      setTimeout(() => { try { ws.close(); } catch(e) {} }, 60000);
+    } catch (err) {
+      console.error(LOG, 'Auto-summary error:', err.message);
+    }
+  }
 });
 
 async function stopPipeline() {
@@ -246,7 +343,9 @@ const server = http.createServer(async (req, res) => {
 
       // Start join asynchronously
       memory.startMeeting(meetLink, '');
-      aiResponder.setMeetingId(extractMeetId(meetLink));
+      const meetId = extractMeetId(meetLink);
+      aiResponder.setMeetingId(meetId);
+      transcriber.setMeetingId(meetId);
 
       meetJoiner.join(meetLink, botName).catch(err => {
         console.error(LOG, 'Join error:', err.message);
@@ -261,8 +360,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       meetJoiner.leave().then(async () => {
-        const filePath = await memory.endMeeting();
-        console.log(LOG, 'Left and saved transcript:', filePath);
+        await endMeetingWithSummary();
       }).catch(err => {
         console.error(LOG, 'Leave error:', err.message);
       });
@@ -344,7 +442,9 @@ if (process.stdin.isTTY !== undefined) {
           break;
         }
         memory.startMeeting(parts[1]);
-        aiResponder.setMeetingId(extractMeetId(parts[1]));
+        const cliMeetId = extractMeetId(parts[1]);
+        aiResponder.setMeetingId(cliMeetId);
+        transcriber.setMeetingId(cliMeetId);
         meetJoiner.join(parts[1], parts[2]).catch(e => console.error(e.message));
         break;
 

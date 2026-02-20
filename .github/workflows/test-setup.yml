@@ -5,11 +5,12 @@ on:
   push:
     paths:
       - 'server/Dockerfile'
-      - 'server/docker-compose.yml'
+      - 'docker-compose.yml'
       - 'server/setup.sh'
-      - 'server/.env.example'
+      - '.env.example'
       - 'server/start.sh'
       - 'server/package.json'
+      - 'server/index.js'
       - 'meet-bot/Dockerfile'
       - 'meet-bot/src/**'
       - 'meet-bot/package.json'
@@ -26,7 +27,7 @@ jobs:
       - name: Verify files exist
         run: |
           echo "=== Checking required files ==="
-          for f in server/Dockerfile docker-compose.yml server/setup.sh .env.example server/start.sh server/package.json server/index.js server/speaker_service.py; do
+          for f in server/Dockerfile docker-compose.yml .env.example server/start.sh server/package.json server/index.js server/speaker_service.py; do
             if [ -f "$f" ]; then
               echo "✅ $f"
             else
@@ -49,18 +50,20 @@ jobs:
           GATEWAY_TOKEN=test-token-for-ci
           USE_GATEWAY_WS=true
           AUTH_TOKEN=ci-test-auth-token
-          WHISPER_URL=http://127.0.0.1:9000/asr?language=es&output=json
           TTS_ENGINE=edge
           TTS_VOICE=es-AR-TomasNeural
           KOKORO_URL=http://127.0.0.1:5004
           KOKORO_VOICE=em_alex
           BOT_NAME=jarvis
           OWNER_NAME=CI-Test
-          GW_SESSION_KEY=voice
-          ASR_MODEL=tiny
-          WHISPER_IMAGE=onerahmet/openai-whisper-asr-webservice:latest
-          PORT=3200
-          WHISPER_PORT=9000
+          VOICE_SESSION_KEY=voice
+          WHISPER_MODEL=Systran/faster-whisper-large-v3-turbo
+          STT_PORT=9000
+          STT_TAG=latest
+          STT_DEVICE=cpu
+          STT_COMPUTE_TYPE=int8
+          KOKORO_TAG=latest-cpu
+          VOICE_PORT=3200
           EOF
           # Remove leading whitespace from heredoc
           sed -i 's/^          //' .env
@@ -79,8 +82,8 @@ jobs:
 
       - name: Start voice server only
         run: |
-          # Only start voice-server (no external GPU services like kokoro/whisper)
-          docker compose up -d voice-server
+          # Only start voice-server (no GPU services — no whisper-fast or kokoro in CI)
+          docker compose up -d --no-deps voice-server
           echo "✅ Voice server starting..."
 
       - name: Wait for Voice Server

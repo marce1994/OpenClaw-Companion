@@ -115,6 +115,7 @@ class MeetJoiner extends EventEmitter {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
+      '--disable-frame-rate-limit',
     ];
 
     // If Live2D is enabled, don't use fake video — we'll provide our own
@@ -266,6 +267,33 @@ class MeetJoiner extends EventEmitter {
 
     // Enter bot name if there's a name input (guest mode)
     await this._trySetName();
+
+    // Ensure mic is unmuted before joining (we inject audio via PulseAudio virtual mic)
+    await this._sleep(1000);
+    let unmuted = await this._tryClick('[aria-label*="microphone" i][data-is-muted="true"]', 'Unmute mic');
+    if (!unmuted) {
+      // Fallback: try via page.evaluate for dynamic DOM
+      try {
+        unmuted = await this.page.evaluate(() => {
+          // Try data-is-muted attribute
+          const mutedBtn = document.querySelector('[data-is-muted="true"][aria-label*="microphone" i]');
+          if (mutedBtn) { mutedBtn.click(); return true; }
+          // Try any muted mic button
+          const btns = document.querySelectorAll('button[aria-label*="microphone" i], [role="button"][aria-label*="microphone" i]');
+          for (const btn of btns) {
+            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+            if (label.includes('unmute') || label.includes('activar') || label.includes('turn on')) {
+              btn.click(); return true;
+            }
+          }
+          return false;
+        });
+        if (unmuted) console.log(LOG, 'Unmuted mic via evaluate fallback');
+      } catch (e) { /* ignore */ }
+    }
+    if (!unmuted) {
+      console.log(LOG, 'Mic already unmuted or toggle not found');
+    }
 
     // Click "Ask to join" or "Join now"
     await this._sleep(2000);

@@ -10,14 +10,18 @@ Your AI, alive. Talk to an animated Live2D avatar through voice or text — Andr
 
 - **Push-to-talk voice** — hold, speak, release
 - **Streaming TTS** — hear the first sentence while the AI is still thinking
-- **Emotion-reactive Live2D avatars** — 9 emotions, 7 animated models
+- **Emotion-reactive Live2D avatars** — 9 emotions, 7 animated models, emoji bubble reactions
 - **Smart Listen mode** — ambient always-on listening with wake word detection
+- **Auto noise detection** — quiet/noisy profiles with hysteresis for car mode
 - **Speaker identification** — auto-enrolls voices, recognizes who's speaking
-- **Google Meet bot** — joins calls with Live2D avatar, responds when mentioned
-- **Bilingual support** — auto-detects language (EN/ES) for TTS
+- **Google Meet bot** — joins calls with Live2D avatar, speaker detection, transcript batching, meeting memory
+- **Bilingual support** — auto-detects language (EN/ES), filters phantom language detections
 - **Vision & file analysis** — send images or documents for AI analysis
 - **Multiple TTS engines** — Kokoro (local GPU, ~460ms), Edge TTS (cloud, free)
 - **Text chat with markdown** — code blocks, inline buttons, artifacts
+- **Device capabilities** — system info, GPS, camera, Bluetooth car mic via Android bridge
+- **Gateway WS integration** — native WebSocket protocol v3 with streaming + image attachments
+- **Custom whisper-fast server** — minimal Python wrapper replacing Speaches' FastAPI (~239ms GPU)
 - **Works over Tailscale / LAN / WAN**
 
 ## Architecture
@@ -37,7 +41,7 @@ Your AI, alive. Talk to an animated Live2D avatar through voice or text — Andr
                                               ┌──────────▼───────────────────────┐
                                               │   Shared Services                │
                                               │                                  │
-                                              │   Speaches STT  (:9000)  ◄─ GPU  │
+                                              │   whisper-fast   (:9000)  ◄─ GPU  │
                                               │   Kokoro TTS    (:5004)  ◄─ GPU  │
                                               │   Diarizer      (:3202)  ◄─ GPU  │
                                               │   OpenClaw Gateway               │
@@ -108,8 +112,8 @@ curl http://localhost:3200/health    # Health check
 | Service | Port | Description | Required |
 |---------|------|-------------|----------|
 | `voice-server` | 3200/3443 | WebSocket bridge, TTS, speaker ID | ✅ Yes |
-| `speaches-stt` | 9000 | Speech-to-text (faster-whisper) | ✅ Yes |
-| `kokoro-tts` | 5004 | Text-to-speech (GPU, ~460ms) | ✅ Yes (or use Edge TTS) |
+| `whisper-fast` | 9000 | Speech-to-text (custom minimal server + faster-whisper-large-v3-turbo) | ✅ Yes |
+| `kokoro-tts` | 5004 | Text-to-speech (GPU, ~330ms) | ✅ Yes (or use Edge TTS) |
 | `meet-bot` | 3300 | Google Meet bot with Live2D | Optional |
 | `diarizer` | 3202 | Speaker diarization (pyannote) | Optional |
 

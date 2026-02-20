@@ -1,7 +1,8 @@
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
-const { writeFileSync, unlinkSync } = require('fs');
+const { writeFileSync, unlinkSync, mkdirSync } = require('fs');
 const path = require('path');
+const config = require('./config');
 
 const LOG = '[Audio]';
 
@@ -13,6 +14,10 @@ class AudioPipeline extends EventEmitter {
     this.SAMPLE_RATE = 16000;
     this.CHANNELS = 1;
     this.BITS = 16;
+    // Audio recording
+    this.recordAudio = config.recordAudio;
+    this.chunkIndex = 0;
+    this.recordingDir = '';
   }
 
   /**
@@ -27,6 +32,15 @@ class AudioPipeline extends EventEmitter {
 
     console.log(LOG, 'Starting audio capture from meet_capture.monitor...');
 
+    // Setup audio recording if enabled
+    if (this.recordAudio) {
+      const dateStr = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 16);
+      this.recordingDir = path.join(config.meetingsDir, `audio-${dateStr}`);
+      mkdirSync(this.recordingDir, { recursive: true });
+      this.chunkIndex = 0;
+      console.log(LOG, `Audio recording enabled → ${this.recordingDir}`);
+    }
+
     this.parecProc = spawn('parec', [
       '--device=meet_capture.monitor',
       '--rate=16000',
@@ -37,8 +51,28 @@ class AudioPipeline extends EventEmitter {
 
     this.capturing = true;
 
+    // Buffer for recording: save every ~5s of audio as a WAV chunk
+    let recordBuffer = Buffer.alloc(0);
+    const recordChunkBytes = 5 * this.SAMPLE_RATE * this.BITS / 8 * this.CHANNELS;
+
     this.parecProc.stdout.on('data', (chunk) => {
       this.emit('audio', chunk);
+
+      // Save audio chunks if recording is enabled
+      if (this.recordAudio && this.recordingDir) {
+        recordBuffer = Buffer.concat([recordBuffer, chunk]);
+        if (recordBuffer.length >= recordChunkBytes) {
+          const wavBuf = this._pcmToWav(recordBuffer);
+          const chunkFile = path.join(this.recordingDir, `chunk-${String(this.chunkIndex).padStart(5, '0')}.wav`);
+          try {
+            writeFileSync(chunkFile, wavBuf);
+            this.chunkIndex++;
+          } catch (e) {
+            console.error(LOG, 'Failed to save audio chunk:', e.message);
+          }
+          recordBuffer = Buffer.alloc(0);
+        }
+      }
     });
 
     this.parecProc.stderr.on('data', (data) => {
@@ -69,6 +103,30 @@ class AudioPipeline extends EventEmitter {
       this.parecProc = null;
       this.capturing = false;
     }
+  }
+
+  _pcmToWav(pcmData) {
+    const sampleRate = this.SAMPLE_RATE;
+    const channels = this.CHANNELS;
+    const bitsPerSample = this.BITS;
+    const byteRate = sampleRate * channels * bitsPerSample / 8;
+    const blockAlign = channels * bitsPerSample / 8;
+    const dataSize = pcmData.length;
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+    return Buffer.concat([header, pcmData]);
   }
 
   /**
