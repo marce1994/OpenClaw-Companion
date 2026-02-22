@@ -137,6 +137,12 @@ curl http://localhost:3200/health
 
 ## 📦 Services
 
+### ⚡ Performance Benchmarks
+
+![Whisper Performance Comparison](https://quickchart.io/chart?w=700&h=400&c=%7B%22type%22%3A%20%22bar%22%2C%20%22data%22%3A%20%7B%22labels%22%3A%20%5B%22GPU%22%2C%20%22CPU%22%5D%2C%20%22datasets%22%3A%20%5B%7B%22label%22%3A%20%22Transcription%20Time%20%28seconds%29%22%2C%20%22data%22%3A%20%5B0.239%2C%202.5%5D%2C%20%22backgroundColor%22%3A%20%5B%22rgba%2875%2C%20192%2C%2075%2C%200.8%29%22%2C%20%22rgba%28255%2C%20159%2C%2064%2C%200.8%29%22%5D%2C%20%22borderColor%22%3A%20%5B%22rgb%2875%2C%20192%2C%2075%29%22%2C%20%22rgb%28255%2C%20159%2C%2064%29%22%5D%2C%20%22borderWidth%22%3A%202%7D%5D%7D%2C%20%22options%22%3A%20%7B%22title%22%3A%20%7B%22display%22%3A%20true%2C%20%22text%22%3A%20%22Whisper-Fast%20Performance%3A%20GPU%20vs%20CPU%22%7D%2C%20%22scales%22%3A%20%7B%22yAxes%22%3A%20%5B%7B%22ticks%22%3A%20%7B%22beginAtZero%22%3A%20true%7D%2C%20%22title%22%3A%20%7B%22display%22%3A%20true%2C%20%22text%22%3A%20%22Time%20%28seconds%29%22%7D%7D%5D%7D%2C%20%22plugins%22%3A%20%7B%22datalabels%22%3A%20%7B%22display%22%3A%20true%2C%20%22align%22%3A%20%22top%22%2C%20%22anchor%22%3A%20%22end%22%2C%20%22font%22%3A%20%7B%22size%22%3A%2012%2C%20%22weight%22%3A%20%22bold%22%7D%7D%7D%7D%7D)
+
+### Service Registry
+
 | Service | Port | Description | Required |
 |---------|------|-------------|----------|
 | `voice-server` | 3200/3443 | WebSocket bridge, TTS, speaker ID | ✅ Yes |
