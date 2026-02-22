@@ -4,7 +4,7 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 
 ## System Overview
 
-![System Architecture Diagram](https://kroki.io/mermaid/png/eNqFUtFu0zAUfecrroLECxoNTSsxhCaladpmy7aoDqtQxEPa3HSmXmw57qZK-wTEJoGQ4IWniWfe-B5-AD6B2O00F1XCLzk-9xzfe2LPZS7OIe09gmbVy-nc7ANGsVKZ8-fb57vfP28giKPwJIXYfxOOnbdGq5evFR9_gF8VktMCfCFeTWXr4IgrRit4CjG9xHbfcvS04_0tTHC6aWIMY8xnqtGnK4FkJqlQlifQng93cIyooMfXjmQpBCpE2biSJavRXxaUb1xYFea7HYqgvESpD_v0Hc5OoyAEEo7PthL1M-eEF_jsXa1HJHy2wE0_LhV4bddteZ2OZznCzCEC80UzSdTfkj63VING1YTFaoZABKMKnkB4wRXllaUaZk6Sy5wxZJCm5L9p6AzrzPn19Yu-I52lyUSs80aZMzmntWhmI2n6MNy-67pmN0xeW_Ioc474gkuumz-ou67b2aE-zJxTgVXA8isY5gqv8pVRxfExECUxv6DVfFcEH_b2Dq4npDUh5Br6huvt4ALDjUOSgp9E92xfsxBaeGDhocEDCw8NjizNyMKHBo8sHBm87hVaeP331Yrh5uFCSRl7-Ri9sl0WVnX9zDbV0sNu2f2nqq_t3v2i7OL-X_fd974=)
+![System Architecture Diagram](docs/images/architecture.png)
 
 **Architecture Components:**
 
@@ -245,7 +245,7 @@ All engines produce audio that's sent as base64 in `audio_chunk` messages. Engin
 
 ### Connection Flow Diagram
 
-![Connection Flow](https://kroki.io/mermaid/png/eNpdj9FKwzAUQN_9ijCfpyJbBZFBdWMWaxlrwAcRuUnvumBJSxIFoZ_h-0C_QfwtP2FNUtdg-1I4596eWypotoTOj0j3JEWFj6Pf3ccPSebp4oqp09kDCCNkOXpyBlUgtVO-CV3HWX6zTq6TbOnUnFKyUjVHrYOJrZAvdmL3Rehtkt392Wl6T5YoUUGwP28QvP1J8tUiPtiU5iR-LUTdi4deMh7PWrCEaJSm9YlDrOPGfnElGkMUchRvWLS-bGh0oo3SBpTRrW8Zqhwvaomt--9Q0dOTDjNQJT4LGSj9bks5SI7V_3Ft3rsr3CkbUVWXx3hm34D5OzycnMN0Mw2h2-8hsMkF4wH0aR5GEWMR7AGqj5qT)
+![Connection Flow](docs/images/connection.png)
 
 **Connection Sequence:**
 
@@ -289,7 +289,7 @@ Client → server messages can include `cseq` for deduplication. The server trac
 
 **Data Processing Pipeline:**
 
-![Data Flow Diagram](https://kroki.io/mermaid/png/eNptkNFOwjAUhu99ipN6TRw6JhpDMgYMEo3oFrhYuOjGmSyr3dJ1wSV7Bl7BGx_QR7B0DWJiL3rzff_fnvMmaLmDx9cLUMeNyPfn4QtWRZYgLHhZy4dYXI2W3hO49TYryAZ6vVG7dlcwphU6dgvjiKwxDookx05-qbFGstGFY63TquFJC54yd1lVooAgDLviQki4syzrP38SkaBEmit_MfnVb66tvtE9rYf4IVuYRuS5RO4xuteuTyXuaWPMiTZPdTwtVEKTaUekQPoOYZEjr1qYqaeRS-QJ6rKgZJmUKEzbTGeWx0GM1YIfkSUVlDFkOhKGgbF9bev9nbY2j4jHMhXu5mK0iWmS_6k_jgXerua5-tBcA31VsmEILqQZY_eXabod2OkZmBsw7Ce3Q_sMTA1w7HiQOj_WOJce)
+![Data Flow Diagram](docs/images/dataflow.png)
 
 **Smart Listen Audio Processing:**
 
@@ -315,7 +315,7 @@ Client                              Server
 
 ### State Machine Diagram
 
-![State Machine](https://kroki.io/mermaid/png/eNpdj9FKwzAUQN_9ijCfpyJbBZFBdWMWaxlrwAcRuUnvumBJSxIFoZ_h-0C_QfwtP2FNUtdg-1I4596eWypotoTOj0j3JEUFj6Pf3ccPSebp4oqp09kDCCNkOXpyBlUgtVO-CV3HWX6zTq6TbOnUnFKyUjVHrYOJrZAvdmL3Rehtkt392Wl6T5YoUUGwP28QvP1J8tUiPtiU5iR-LUTdi4deMh7PWrCEaJSm9YlDrOPGfnElGkMUchRvWLS-bGh0oo3SBpTRrW8Zqhwvaomt--9Q0dOTDjNQJT4LGSj9bks5SI7V_3Ft3rsr3CkbUVWXx3hm34D5OzycnMN0Mw2h2-8hsMkF4wH0aR5GEWMR7AGqj5qT)
+![State Machine](docs/images/states.png)
 
 **State Transitions:**
 

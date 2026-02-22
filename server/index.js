@@ -1347,13 +1347,15 @@ function shouldRespond(text, botName) {
 // Enhanced: 30-second rolling window, hysteresis (500 up / 300 down for 15s), noise profile
 const noiseTracker = {
   samples: [],           // { rms, time } entries
+  rmsHistory: [],        // last 30 RMS values (one per second rolling window)
   windowMs: 30000,       // 30-second rolling window
   baselineRms: 0,        // running average ambient noise level
+  isNoisy: false,        // true when in noisy environment
   profile: 'quiet',      // 'quiet' or 'noisy'
   noisyThreshold: 500,   // switch to noisy when avg RMS > 500
-  quietThreshold: 300,   // switch to quiet when avg RMS < 300 for 15s
-  quietSinceMs: null,    // timestamp when RMS first dropped below quietThreshold
-  quietHoldMs: 15000,    // must stay below threshold for 15 seconds
+  quietThreshold: 300,   // switch to quiet when avg RMS < 300 for 15 consecutive readings
+  consecutiveQuiet: 0,   // count of consecutive readings below quietThreshold
+  quietReadingsRequired: 15, // must have 15+ consecutive quiet readings to switch back
 };
 
 function updateNoiseBaseline(audioBuffer) {
@@ -1371,38 +1373,44 @@ function updateNoiseBaseline(audioBuffer) {
   const cutoff = now - noiseTracker.windowMs;
   noiseTracker.samples = noiseTracker.samples.filter(s => s.time > cutoff);
   
+  // Track rolling RMS history (last 30 values, one per reading)
+  noiseTracker.rmsHistory.push(rms);
+  if (noiseTracker.rmsHistory.length > 30) {
+    noiseTracker.rmsHistory = noiseTracker.rmsHistory.slice(-30);
+  }
+  
   const avg = noiseTracker.samples.reduce((a, s) => a + s.rms, 0) / noiseTracker.samples.length;
-  const prevProfile = noiseTracker.profile;
   noiseTracker.baselineRms = avg;
   
   if (noiseTracker.profile === 'quiet') {
     // Switch to noisy if avg exceeds threshold
     if (avg > noiseTracker.noisyThreshold) {
       noiseTracker.profile = 'noisy';
-      noiseTracker.quietSinceMs = null;
-      console.log(`🔊 Noise profile: quiet → NOISY (avg RMS: ${avg.toFixed(0)}). Stricter filtering active.`);
+      noiseTracker.isNoisy = true;
+      noiseTracker.consecutiveQuiet = 0;
+      console.log(`🔊 Noisy environment detected (avg RMS: ${avg.toFixed(0)})`);
     }
   } else {
-    // In noisy mode: switch back to quiet only after RMS < 300 for 15+ seconds
+    // In noisy mode: switch back to quiet only after 15+ consecutive readings below threshold
     if (avg < noiseTracker.quietThreshold) {
-      if (!noiseTracker.quietSinceMs) {
-        noiseTracker.quietSinceMs = now;
-      } else if (now - noiseTracker.quietSinceMs >= noiseTracker.quietHoldMs) {
+      noiseTracker.consecutiveQuiet++;
+      if (noiseTracker.consecutiveQuiet >= noiseTracker.quietReadingsRequired) {
         noiseTracker.profile = 'quiet';
-        noiseTracker.quietSinceMs = null;
-        console.log(`🔇 Noise profile: noisy → QUIET (avg RMS: ${avg.toFixed(0)}). Normal filtering resumed.`);
+        noiseTracker.isNoisy = false;
+        noiseTracker.consecutiveQuiet = 0;
+        console.log(`🔇 Quiet environment detected`);
       }
     } else {
-      noiseTracker.quietSinceMs = null; // Reset hold timer if noise spikes again
+      noiseTracker.consecutiveQuiet = 0; // Reset counter if noise spikes again
     }
   }
   
-  return { rms, baseline: avg, isNoisy: noiseTracker.profile === 'noisy' };
+  return { rms, baseline: avg, isNoisy: noiseTracker.isNoisy };
 }
 
 /** Check if we're in noisy profile */
 function isNoisyProfile() {
-  return noiseTracker.profile === 'noisy';
+  return noiseTracker.isNoisy;
 }
 
 // Throttle: only 1 ambient transcription at a time

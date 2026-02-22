@@ -6,6 +6,7 @@ on:
     paths:
       - 'server/Dockerfile'
       - 'docker-compose.yml'
+      - 'setup.sh'
       - 'server/setup.sh'
       - '.env.example'
       - 'server/start.sh'
