@@ -174,6 +174,85 @@ curl -X POST http://localhost:3300/join \
 
 Features: Live2D avatar as camera, bilingual EN/ES, calendar auto-join. See [meet-bot/README.md](meet-bot/README.md).
 
+### Meeting Orchestration API
+
+The voice server exposes REST endpoints for managing multiple concurrent Google Meet bot instances:
+
+#### Join a Meeting
+```bash
+POST /meetings/join
+Content-Type: application/json
+
+{
+  "meetUrl": "https://meet.google.com/abc-defg-hij",
+  "botName": "Jarvis"  # Optional, defaults to config.BOT_NAME
+}
+
+Response:
+{
+  "meetingId": "abc-defg-hij",
+  "status": "joining",
+  "containerId": "meet-bot-abc-defg-hij",
+  "port": 3300
+}
+```
+
+#### Leave a Meeting
+```bash
+POST /meetings/leave
+Content-Type: application/json
+
+{
+  "meetingId": "abc-defg-hij"
+}
+
+Response:
+{
+  "status": "left",
+  "meetingId": "abc-defg-hij"
+}
+```
+
+#### List Active Meetings
+```bash
+GET /meetings
+
+Response:
+{
+  "meetings": [
+    {
+      "meetingId": "abc-defg-hij",
+      "meetUrl": "https://meet.google.com/abc-defg-hij",
+      "botName": "Jarvis",
+      "status": "joined",
+      "joinedAt": "2024-02-22T05:30:00Z",
+      "port": 3300
+    }
+  ],
+  "total": 1,
+  "maxMeetings": 5
+}
+```
+
+#### Get Meeting Details
+```bash
+GET /meetings/{meetingId}
+
+Response:
+{
+  "meetingId": "abc-defg-hij",
+  "meetUrl": "https://meet.google.com/abc-defg-hij",
+  "botName": "Jarvis",
+  "status": "joined",
+  "joinedAt": "2024-02-22T05:30:00Z",
+  "transcriptEntries": 42,
+  "duration": "5m 23s",
+  "port": 3300
+}
+```
+
+**Note:** These endpoints are used internally by OpenClaw Gateway voice commands and Telegram integration. Control meetings naturally via voice ("join the standup") or Telegram chat.
+
 ## 📂 Project Structure
 
 ```

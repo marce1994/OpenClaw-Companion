@@ -104,7 +104,8 @@ async function endMeetingWithSummary() {
   calendar.onMeetingEnded();
   
   // Get summary prompt BEFORE ending meeting (which resets entries)
-  const summaryPrompt = memory.getSummaryPrompt();
+  // Pass bot name to include in summary context
+  const summaryPrompt = memory.getSummaryPrompt(config.botName);
   const filePath = await memory.endMeeting();
   if (filePath) {
     console.log(LOG, `Transcript saved: ${filePath}`);
@@ -198,8 +199,13 @@ memory.on('meeting-ended', async (info) => {
   if (info.entryCount > 0 && info.transcript) {
     try {
       console.log(LOG, 'Generating auto-summary via AI...');
-      const summaryPrompt = `You are a meeting assistant. Summarize this meeting transcript concisely. Include:\n`
-        + `- Key topics discussed\n- Decisions made\n- Action items (who does what)\n- Duration: ${Math.round(info.duration / 60000)} minutes\n\n`
+      const duration = Math.round(info.duration / 60000);
+      const summaryPrompt = `You are a meeting assistant. Summarize this meeting transcript concisely.\n`
+        + `Meeting: ${memory.meetLink || 'Unknown'}\n`
+        + `Bot Facilitator: ${config.botName}\n`
+        + `Duration: ${duration} minutes\n\n`
+        + `Include:\n`
+        + `- Key topics discussed\n- Decisions made\n- Action items (who does what)\n\n`
         + `Transcript:\n${info.transcript.substring(0, 8000)}\n\n`
         + `Reply with a clean markdown summary.`;
 
@@ -489,6 +495,24 @@ server.listen(config.meetPort, () => {
 
   // Start calendar sync
   calendar.start();
+
+  // --- Auto-join on startup if MEETING_URL env var is set ---
+  if (process.env.MEETING_URL) {
+    const meetingUrl = process.env.MEETING_URL;
+    const botName = process.env.BOT_NAME || config.botName;
+    console.log(LOG, `Auto-joining meeting from MEETING_URL env: ${meetingUrl}`);
+    setTimeout(async () => {
+      try {
+        memory.startMeeting(meetingUrl, '');
+        const meetId = extractMeetId(meetingUrl);
+        aiResponder.setMeetingId(meetId);
+        transcriber.setMeetingId(meetId);
+        await meetJoiner.join(meetingUrl, botName);
+      } catch (err) {
+        console.error(LOG, 'Auto-join error:', err.message);
+      }
+    }, 1000);
+  }
 });
 
 // --- Graceful shutdown ---

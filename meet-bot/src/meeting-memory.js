@@ -114,8 +114,9 @@ class MeetingMemory extends EventEmitter {
   /**
    * Generate a meeting summary using the AI via a callback.
    * Returns the formatted transcript for the caller to send to the AI.
+   * Includes meeting URL, duration, and bot name for context.
    */
-  getSummaryPrompt() {
+  getSummaryPrompt(botName = 'Bot') {
     const transcript = this.getFormattedTranscript();
     if (!transcript || this.entries.length < 3) return null;
 
@@ -123,9 +124,13 @@ class MeetingMemory extends EventEmitter {
       ? this._formatDuration(this.meetingEnd - this.meetingStart)
       : 'unknown';
 
+    const meetingUrl = this.meetLink || 'Unknown';
+
     return `Generate a concise meeting summary for the following meeting.
-Topic: ${this.topic || 'Unknown'}
+Meeting: ${meetingUrl}
+Bot Facilitator: ${botName}
 Duration: ${duration}
+Topic: ${this.topic || 'Unknown'}
 Participants: ${[...new Set(this.entries.map(e => e.speaker).filter(s => s && s !== 'Unknown'))].join(', ') || 'Unknown'}
 
 Include:

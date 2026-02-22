@@ -20,7 +20,7 @@ ALLOWED_LANGUAGES = os.environ.get("ALLOWED_LANGUAGES", "es,en").split(",") if o
 
 print(f"Loading {MODEL_NAME} on {DEVICE} ({COMPUTE_TYPE})...")
 t0 = time.time()
-model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
+model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE, num_workers=3)
 print(f"Model loaded in {time.time()-t0:.1f}s")
 
 
