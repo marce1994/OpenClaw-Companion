@@ -40,8 +40,12 @@ services:
       - WSS_PORT=${WSS_PORT:-3443}
       - TLS_CERT=${TLS_CERT:-}
       - TLS_KEY=${TLS_KEY:-}
+      - GOOGLE_CALENDAR_ICS=${GOOGLE_CALENDAR_ICS:-}
+      - MAX_MEETINGS=${MAX_MEETINGS:-5}
+      - DOCKER_SOCKET=/var/run/docker.sock
     volumes:
       - speaker-data:/data/speakers
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       whisper-fast:
         condition: service_started
@@ -92,42 +96,11 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # ─── Google Meet Bot (optional) ────────────────────────────────────────────
-  # Joins Meet calls with Live2D avatar, transcribes, responds.
-  # Usage: docker compose --profile meet up -d
-  meet-bot:
-    build: ./meet-bot
-    container_name: meet-bot
-    restart: unless-stopped
-    network_mode: host
-    profiles: ["meet"]
-    environment:
-      - GATEWAY_WS_URL=${GATEWAY_WS_URL:-ws://127.0.0.1:18789}
-      - GATEWAY_TOKEN=${GATEWAY_TOKEN}
-      - GW_SESSION_KEY=${MEET_SESSION_KEY:-meet}
-      - WHISPER_URL=http://127.0.0.1:${STT_PORT:-9000}
-      - KOKORO_URL=http://127.0.0.1:${KOKORO_PORT:-5004}
-      - KOKORO_VOICE=${KOKORO_VOICE:-em_alex}
-      - KOKORO_VOICE_EN=${KOKORO_VOICE_EN:-bm_george}
-      - TTS_VOICE=${TTS_VOICE:-es-AR-TomasNeural}
-      - BOT_NAME=${BOT_NAME:-Jarvis}
-      - LIVE2D_MODEL=${LIVE2D_MODEL:-wanko}
-      - LIVE2D_ENABLED=${LIVE2D_ENABLED:-true}
-      - DEFAULT_LANG=${DEFAULT_LANG:-es}
-      - SPEAKER_URL=http://127.0.0.1:3201
-      - SPEAKER_ID=${SPEAKER_ID:-true}
-      - MEET_PORT=${MEET_PORT:-3300}
-      - VAD_CHUNK_MS=${VAD_CHUNK_MS:-1500}
-      - AUTO_LEAVE_ALONE_MS=${AUTO_LEAVE_ALONE_MS:-300000}
-    volumes:
-      - meet-data:/data/meetings
-    depends_on:
-      whisper-fast:
-        condition: service_started
-      kokoro-tts:
-        condition: service_started
+  # Meet Bot Workers (managed by voice-server orchestrator)
+  # 📝 Note: meet-bot:v6 image must be built locally before starting voice-server
+  # Workers are created/destroyed dynamically via Docker API
+  # Build with: docker build -t meet-bot:v6 ./meet-bot
 
 volumes:
   speaker-data:
   whisper-models:
-  meet-data:

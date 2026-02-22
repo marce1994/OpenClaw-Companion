@@ -4,6 +4,8 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
+const MeetOrchestrator = require('./orchestrator');
+const CalendarAutoJoin = require('./calendar');
 let sharp;
 try { sharp = require('sharp'); } catch { sharp = null; }
 
@@ -25,6 +27,16 @@ const BOT_NAME = (process.env.BOT_NAME || 'jarvis').toLowerCase();
 const SPEAKER_URL = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
 const OWNER_NAME = process.env.OWNER_NAME || 'Pablo';
 
+// ─── Meet Orchestrator & Calendar ────────────────────────────────────────────
+const { MeetOrchestrator } = require('./orchestrator');
+const { CalendarAutoJoin } = require('./calendar');
+const { generateDashboard } = require('./dashboard');
+
+const orchestrator = new MeetOrchestrator({
+  maxMeetings: parseInt(process.env.MAX_MEETINGS || '5', 10),
+});
+const calendar = new CalendarAutoJoin(orchestrator, process.env.GOOGLE_CALENDAR_ICS || '');
+
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const TEXT_FILE_EXTENSIONS = new Set(['txt', 'md', 'json', 'csv', 'js', 'py', 'html', 'css', 'xml', 'yaml', 'yml', 'log']);
 const MAX_CONTEXT_LINES = 20;
@@ -34,6 +46,24 @@ const SESSION_TTL = 5 * 60 * 1000;
 
 console.log(`🎙️ Voice WS server starting on port ${PORT}`);
 console.log(`🔑 Token: ${AUTH_TOKEN}`);
+
+// ─── Meet Orchestrator & Calendar ──────────────────────────────────────────
+
+/** Global orchestrator for managing meet-bot workers */
+const orchestrator = new MeetOrchestrator(
+  process.env.DOCKER_SOCKET || '/var/run/docker.sock',
+  parseInt(process.env.MAX_MEETINGS || '5', 10)
+);
+
+/** Clean up orphaned containers on startup */
+orchestrator.cleanupOrphans().catch(err => console.error(`Failed to cleanup orphans: ${err.message}`));
+
+/** Calendar auto-join (if ICS URL provided) */
+const calendar = new CalendarAutoJoin(
+  orchestrator,
+  process.env.GOOGLE_CALENDAR_ICS || '',
+  BOT_NAME
+);
 
 // ─── Session Management ─────────────────────────────────────────────────────
 
@@ -1585,6 +1615,201 @@ function getActiveClient() {
   return null;
 }
 
+// ─── Dashboard Generator ───────────────────────────────────────────────────
+
+function generateDashboardHtml(orchestrator) {
+  const status = orchestrator.getStatus();
+  const uptime = Math.floor(process.uptime());
+  const upHours = Math.floor(uptime / 3600);
+  const upMinutes = Math.floor((uptime % 3600) / 60);
+  const memUsage = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+  
+  const meetingsHtml = status.meetings.map(m => `
+    <div class="meeting-card">
+      <div class="meeting-title">${m.botName}</div>
+      <div class="meeting-url">${m.meetUrl}</div>
+      <div class="meeting-status ${m.status}">${m.status}</div>
+      <div class="meeting-info">
+        <span>📅 ${new Date(m.startedAt).toLocaleTimeString()}</span>
+        <span>⏱️ ${m.duration}s</span>
+      </div>
+    </div>
+  `).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OpenClaw Companion — Meetings Dashboard</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 30px;
+      border-bottom: 2px solid #64748b;
+      padding-bottom: 20px;
+    }
+    h1 {
+      font-size: 2.5em;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #06b6d4, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+    .stat-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 15px;
+      text-align: center;
+    }
+    .stat-label {
+      font-size: 0.9em;
+      color: #94a3b8;
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-size: 2em;
+      font-weight: bold;
+      color: #06b6d4;
+    }
+    .meetings-section {
+      margin-top: 40px;
+    }
+    .section-title {
+      font-size: 1.5em;
+      margin-bottom: 15px;
+      color: #e2e8f0;
+      border-left: 4px solid #06b6d4;
+      padding-left: 12px;
+    }
+    .meetings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 15px;
+    }
+    .meeting-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 15px;
+      border-left: 4px solid #06b6d4;
+    }
+    .meeting-title {
+      font-weight: bold;
+      margin-bottom: 5px;
+      color: #06b6d4;
+    }
+    .meeting-url {
+      font-size: 0.85em;
+      color: #94a3b8;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .meeting-status {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .meeting-status.pending { background: #f59e0b; color: #000; }
+    .meeting-status.admitted { background: #3b82f6; color: #fff; }
+    .meeting-status.running { background: #10b981; color: #fff; }
+    .meeting-status.ended { background: #6b7280; color: #fff; }
+    .meeting-info {
+      font-size: 0.85em;
+      color: #94a3b8;
+      display: flex;
+      gap: 15px;
+      margin-top: 10px;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #64748b;
+    }
+    .refresh-info {
+      text-align: center;
+      color: #64748b;
+      font-size: 0.9em;
+      margin-top: 20px;
+    }
+    footer {
+      text-align: center;
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #334155;
+      color: #64748b;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎬 OpenClaw Companion</h1>
+      <p>Meetings Dashboard</p>
+    </header>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Active Meetings</div>
+        <div class="stat-value">${status.activeMeetings}/${status.maxMeetings}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Uptime</div>
+        <div class="stat-value">${upHours}h ${upMinutes}m</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Memory Usage</div>
+        <div class="stat-value">${memUsage}MB</div>
+      </div>
+    </div>
+
+    <div class="meetings-section">
+      <div class="section-title">📞 Active Meetings</div>
+      ${meetingsHtml ? `<div class="meetings-grid">${meetingsHtml}</div>` : '<div class="empty-state">No active meetings</div>'}
+    </div>
+
+    <div class="refresh-info">
+      🔄 Auto-refresh in 10 seconds...
+    </div>
+
+    <footer>
+      <p>OpenClaw Voice Server v2.0 • Meetings Orchestrator</p>
+    </footer>
+  </div>
+
+  <script>
+    setTimeout(() => location.reload(), 10000);
+  </script>
+</body>
+</html>
+  `;
+  return html;
+}
+
 // ─── HTTP + WebSocket Server ────────────────────────────────────────────────
 
 const TLS_CERT = process.env.TLS_CERT || '';
@@ -1654,11 +1879,166 @@ const requestHandler = (req, res) => {
         res.end(JSON.stringify({ error: e.message }));
       }
     });
+
+  // ─── Meeting Orchestration API ──────────────────────────────────────────
+  } else if (req.url === '/meetings/join' && req.method === 'POST') {
+    setCors();
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { meetUrl, botName } = JSON.parse(body);
+        if (!meetUrl) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "meetUrl" field' }));
+          return;
+        }
+        const result = await orchestrator.joinMeeting(meetUrl, botName || 'Jarvis', GATEWAY_TOKEN, GATEWAY_WS_URL);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+
+  } else if (req.url === '/meetings/leave' && req.method === 'POST') {
+    setCors();
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { meetingId } = JSON.parse(body);
+        if (!meetingId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "meetingId" field' }));
+          return;
+        }
+        const result = await orchestrator.leaveMeeting(meetingId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+
+  } else if (req.url === '/meetings' && req.method === 'GET') {
+    setCors();
+    const meetings = orchestrator.listMeetings();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(meetings));
+
+  } else if (req.url.startsWith('/meetings/') && req.method === 'GET') {
+    setCors();
+    const parts = req.url.split('/');
+    const meetingId = parts[2];
+    if (meetingId === 'status') {
+      // /meetings/status endpoint
+      const status = orchestrator.getStatus();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+    } else if (meetingId === 'dashboard') {
+      // /meetings/dashboard endpoint
+      const dashboardHtml = generateDashboardHtml(orchestrator);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(dashboardHtml);
+    } else {
+      // /meetings/:id endpoint
+      const meeting = orchestrator.getMeetingStatus(meetingId);
+      if (!meeting) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Meeting not found' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(meeting));
+      }
+    }
+
+  // ─── Meeting Orchestrator REST API ──────────────────────────────────────
+  } else if (req.url === '/meetings/join' && req.method === 'POST') {
+    setCors();
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', async () => {
+      try {
+        const { meetUrl, botName } = JSON.parse(body);
+        if (!meetUrl) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'meetUrl required' })); return; }
+        const result = await orchestrator.joinMeeting(meetUrl, botName);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+  } else if (req.url === '/meetings/leave' && req.method === 'POST') {
+    setCors();
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', async () => {
+      try {
+        const { meetingId } = JSON.parse(body);
+        if (!meetingId) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'meetingId required' })); return; }
+        const result = await orchestrator.leaveMeeting(meetingId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+  } else if (req.url === '/meetings/status' && req.method === 'GET') {
+    setCors();
+    const whisperOk = await pingServiceQuick(process.env.WHISPER_URL || 'http://127.0.0.1:9000');
+    const kokoroOk = await pingServiceQuick('http://127.0.0.1:8880');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeMeetings: orchestrator.meetings.size,
+      maxMeetings: orchestrator.maxMeetings,
+      gpuServices: { whisper: whisperOk ? 'online' : 'offline', kokoro: kokoroOk ? 'online' : 'offline' },
+    }));
+  } else if (req.url === '/meetings/dashboard' && req.method === 'GET') {
+    try {
+      const html = await generateDashboard(orchestrator);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Dashboard error: ' + e.message);
+    }
+  } else if (req.url?.startsWith('/meetings/') && req.method === 'GET') {
+    setCors();
+    const id = req.url.split('/meetings/')[1];
+    if (id) {
+      const status = await orchestrator.getMeetingStatus(id);
+      if (status) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(status));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Meeting not found' }));
+      }
+    }
+  } else if (req.url === '/meetings' && req.method === 'GET') {
+    setCors();
+    const list = await orchestrator.listMeetings();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(list));
   } else {
     res.writeHead(404);
     res.end('Not found');
   }
 };
+
+/** Quick ping for status endpoint */
+async function pingServiceQuick(url) {
+  try {
+    const base = url.replace(/\/(?:asr|v1).*$/, '');
+    const resp = await fetch(base, { signal: AbortSignal.timeout(2000) });
+    return resp.ok || resp.status === 404;
+  } catch { return false; }
+}
 
 const httpServer = http.createServer(requestHandler);
 
@@ -1903,6 +2283,11 @@ if (wssSecure) wssSecure.on('connection', handleConnection);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Voice WS server on 0.0.0.0:${PORT}`);
+
+  // Start Meet Orchestrator & Calendar
+  orchestrator.start().catch(e => console.error('Orchestrator start error:', e.message));
+  calendar.start();
+
   // Start Gateway WS connection if enabled
   if (USE_GATEWAY_WS) {
     console.log(`🔌 Gateway WS mode enabled, connecting to ${GATEWAY_WS_URL}...`);
@@ -1912,3 +2297,23 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   }
 });
 if (httpsServer) httpsServer.listen(WSS_PORT, '0.0.0.0', () => console.log(`✅ Voice WSS server on 0.0.0.0:${WSS_PORT}`));
+
+// ─── Graceful Shutdown ──────────────────────────────────────────────────────
+
+process.on('SIGTERM', async () => {
+  console.log(`🛑 SIGTERM received, shutting down gracefully...`);
+  await calendar.shutdown();
+  await orchestrator.shutdown();
+  httpServer.close(() => console.log('HTTP server closed'));
+  if (httpsServer) httpsServer.close(() => console.log('HTTPS server closed'));
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log(`🛑 SIGINT received, shutting down gracefully...`);
+  await calendar.shutdown();
+  await orchestrator.shutdown();
+  httpServer.close(() => console.log('HTTP server closed'));
+  if (httpsServer) httpsServer.close(() => console.log('HTTPS server closed'));
+  process.exit(0);
+});

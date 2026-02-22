@@ -5,6 +5,8 @@
   "main": "index.js",
   "dependencies": {
     "ws": "^8.19.0",
-    "sharp": "^0.32.6"
+    "sharp": "^0.32.6",
+    "dockerode": "^4.0.4",
+    "node-ical": "^0.25.3"
   }
 }
