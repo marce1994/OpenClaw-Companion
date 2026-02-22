@@ -1,10 +1,24 @@
 # 🐾 OpenClaw Companion
 
-Your AI, alive. Talk to an animated Live2D avatar through voice or text — Android, Web, and Google Meet. Powered by [OpenClaw](https://github.com/openclaw/openclaw).
+**Your AI, alive.** Talk to an animated Live2D avatar through voice or text — Android, Web, and Google Meet. Powered by [OpenClaw](https://github.com/openclaw/openclaw).
 
 <p align="center">
-  <img src="preview.jpg" alt="OpenClaw Companion — Live2D voice assistant" width="300" />
+  <img src="preview.jpg" alt="OpenClaw Companion — Live2D voice assistant" width="400" />
 </p>
+
+> **Self-hosted voice assistant with streaming TTS, speaker identification, emotion-reactive avatars, and Google Meet integration. Deploy on your own hardware with GPU support for fast transcription and local TTS.**
+
+## 📑 Table of Contents
+
+- [✨ Features](#-features)
+- [🏗️ Architecture Overview](#-architecture-overview)
+- [📦 Services](#-services)
+- [🚀 Quick Start](#-quick-start)
+- [🤖 Google Meet Bot](#-google-meet-bot)
+- [📂 Project Structure](#-project-structure)
+- [⚙️ Configuration](#-configuration)
+- [🔧 Troubleshooting](#-troubleshooting)
+- [📖 Documentation](#-documentation)
 
 ## ✨ Features
 
@@ -62,50 +76,64 @@ Your AI, alive. Talk to an animated Live2D avatar through voice or text — Andr
 
 ### Prerequisites
 
-- **Docker** with Docker Compose v2
-- **OpenClaw Gateway** running ([setup guide](https://github.com/openclaw/openclaw))
-- Optional: **NVIDIA GPU** for faster STT and local TTS
+- ✅ **Docker** with Docker Compose v2
+- ✅ **OpenClaw Gateway** running ([setup guide](https://github.com/openclaw/openclaw))
+- ⚡ Optional: **NVIDIA GPU** for faster STT (~239ms) and local TTS (~460ms)
 
-### Option 1: Interactive Setup (Recommended)
+### 🎯 Option 1: Interactive Setup (Recommended)
+
+The fastest way to get started with automatic GPU detection:
 
 ```bash
-git clone https://github.com/openclaw/OpenClaw-Companion.git
+git clone https://github.com/marce1994/OpenClaw-Companion.git
 cd OpenClaw-Companion
 chmod +x setup.sh
 ./setup.sh
 ```
 
-The wizard will guide you through configuration, detect GPU, generate `.env`, and start services.
+The wizard guides you through:
+- Configuration (Gateway token, auth secret)
+- GPU detection
+- `.env` file generation
+- Service startup
 
-### Option 2: Manual Setup
+### 🔧 Option 2: Manual Setup
 
 ```bash
-git clone https://github.com/openclaw/OpenClaw-Companion.git
+git clone https://github.com/marce1994/OpenClaw-Companion.git
 cd OpenClaw-Companion
 
-# Configure
+# 1. Configure environment
 cp .env.example .env
-nano .env  # Set GATEWAY_TOKEN, AUTH_TOKEN, etc.
+nano .env  # Set GATEWAY_TOKEN, AUTH_TOKEN, BOT_NAME
 
-# GPU mode (default)
+# 2. Start services (GPU mode)
 docker compose up -d
 
-# OR CPU-only mode
+# OR: CPU-only mode (slower STT/TTS)
 docker compose -f docker-compose.cpu.yml up -d
 ```
 
-### Verify It's Running
+### ✅ Verify Services
 
 ```bash
-docker compose ps                    # Check service status
-docker compose logs -f voice-server  # Voice server logs
-curl http://localhost:3200/health    # Health check
+# Check status
+docker compose ps
+
+# View voice server logs
+docker compose logs -f voice-server
+
+# Health check
+curl http://localhost:3200/health
 ```
 
-### Connect a Client
+### 🔗 Connect Your Client
 
-- **Android app**: Enter `ws://YOUR_SERVER_IP:3200` and your auth token in Settings
-- **Web app**: `cd web && npm install && npm run dev`
+| Client | Setup |
+|--------|-------|
+| **Android App** | Enter server URL `ws://YOUR_SERVER_IP:3200` + auth token in Settings |
+| **Web Client** | `cd web && npm install && npm run dev` |
+| **Google Meet Bot** | Enable with `docker compose --profile meet up -d` |
 
 ## 📦 Services
 
@@ -177,33 +205,107 @@ Key variables:
 
 ## 🔧 Troubleshooting
 
-**Services won't start?**
+### Services Won't Start
+
 ```bash
-docker compose logs -f          # Check all logs
-docker compose ps               # Check status
+# Check all service logs
+docker compose logs -f
+
+# Check specific service
+docker compose logs voice-server
+docker compose ps
 ```
 
-**Whisper is slow?**
-- Make sure you're using the GPU compose file
-- Check GPU allocation: `nvidia-smi`
+**Common fixes:**
+- Verify Docker daemon is running: `docker ps`
+- Check port conflicts: `netstat -tuln | grep 3200`
+- Increase Docker memory limit (STT needs ~6GB)
 
-**No audio response?**
-- Verify Kokoro is running: `curl http://localhost:5004/health`
-- Try Edge TTS fallback: set `TTS_ENGINE=edge` in `.env`
+### Slow Speech Transcription
 
-**Can't connect from Android?**
-- Use your machine's LAN IP, not `localhost`
-- Check firewall allows port 3200
-- For remote access, use Tailscale or set up WSS with TLS
+⚡ **GPU is not being used**
 
-## 📖 More Documentation
+```bash
+# Verify GPU allocation
+nvidia-smi
 
-- [Architecture & Protocol](docs/ARCHITECTURE.md) — full WebSocket protocol spec
-- [Server README](server/README.md) — detailed server configuration
-- [Meet Bot README](meet-bot/README.md) — Meet bot setup
-- [Android README](android/README.md) — building the Android app
-- [Web README](web/README.md) — web client setup
+# Check Docker GPU access
+docker run --rm --gpus all nvidia/cuda:11.8.0-runtime nvidia-smi
+```
+
+**Solution:** Use `docker-compose.yml` (GPU) instead of `docker-compose.cpu.yml`
+
+### No Audio Response
+
+🔇 **TTS engine isn't running**
+
+```bash
+# Check Kokoro health
+curl http://localhost:5004/health
+
+# View Kokoro logs
+docker compose logs kokoro-tts
+```
+
+**Solution:** Enable fallback TTS in `.env`
+
+```bash
+TTS_ENGINE=edge  # Use cloud-based Edge TTS (slower but reliable)
+```
+
+### Can't Connect from Android
+
+📱 **Connection refused / timeout**
+
+```bash
+# Verify voice server is accessible
+curl http://YOUR_SERVER_IP:3200/health
+
+# Check firewall
+sudo ufw allow 3200/tcp
+```
+
+**Solutions:**
+- Use your **LAN IP** (e.g., `192.168.1.100`), not `localhost`
+- For remote access: use **Tailscale** or **WSS with TLS**
+- Check that server is listening on all interfaces: `netstat -tuln | grep 3200`
+
+## 📖 Documentation
+
+### Core Documentation
+
+| Doc | Description |
+|-----|-------------|
+| **[Architecture & Protocol](docs/ARCHITECTURE.md)** | System design, WebSocket protocol spec, data flow diagrams |
+| **[Server Configuration](server/README.md)** | Voice server setup, environment variables, speaker ID |
+| **[Meet Bot Setup](meet-bot/README.md)** | Google Meet integration, calendar auto-join, Live2D streaming |
+| **[Android App](android/README.md)** | Building from source, Live2D integration, device capabilities |
+| **[Web Client](web/README.md)** | Web app setup, React components, real-time streaming |
+
+### Quick References
+
+- **Roadmap:** [PLAN.md](PLAN.md) — Current sprints, completed features, backlog
+- **Issues?** [Troubleshooting Guide](#-troubleshooting) above
+- **Contributing:** Pull requests welcome! Check out open issues
+
+---
+
+## 📊 Performance Metrics
+
+| Component | GPU | CPU | Fallback |
+|-----------|-----|-----|----------|
+| **Speech Recognition** | 239ms | 2.5s | Whisper model can handle both |
+| **Text-to-Speech** | 460ms | N/A | Edge TTS (2.3s, cloud) |
+| **Speaker ID** | — | ~100ms | Similarity matching |
+
+All timings measured on NVIDIA RTX 4090 (GPU) and Intel i9 (CPU).
+
+---
 
 ## 📄 License
 
-[MIT](LICENSE)
+MIT License — See [LICENSE](LICENSE) for details
+
+---
+
+**Made with ❤️ by the OpenClaw community. Deploy it, fork it, make it yours!**

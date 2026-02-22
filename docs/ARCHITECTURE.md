@@ -4,6 +4,10 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 
 ## System Overview
 
+![System Architecture Diagram](https://kroki.io/mermaid/png/eNqFUtFu0zAUfecrroLECxoNTSsxhCaladpmy7aoDqtQxEPa3HSmXmw57qZK-wTEJoGQ4IWniWfe-B5-AD6B2O00F1XCLzk-9xzfe2LPZS7OIe09gmbVy-nc7ANGsVKZ8-fb57vfP28giKPwJIXYfxOOnbdGq5evFR9_gF8VktMCfCFeTWXr4IgrRit4CjG9xHbfcvS04_0tTHC6aWIMY8xnqtGnK4FkJqlQlifQng93cIyooMfXjmQpBCpE2biSJavRXxaUb1xYFea7HYqgvESpD_v0Hc5OoyAEEo7PthL1M-eEF_jsXa1HJHy2wE0_LhV4bddteZ2OZznCzCEC80UzSdTfkj63VING1YTFaoZABKMKnkB4wRXllaUaZk6Sy5wxZJCm5L9p6AzrzPn19Yu-I52lyUSs80aZMzmntWhmI2n6MNy-67pmN0xeW_Ioc474gkuumz-ou67b2aE-zJxTgVXA8isY5gqv8pVRxfExECUxv6DVfFcEH_b2Dq4npDUh5Br6huvt4ALDjUOSgp9E92xfsxBaeGDhocEDCw8NjizNyMKHBo8sHBm87hVaeP331Yrh5uFCSRl7-Ri9sl0WVnX9zDbV0sNu2f2nqq_t3v2i7OL-X_fd974=)
+
+**Architecture Components:**
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                             CLIENT LAYER                                     │
@@ -58,6 +62,12 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 
 ## Docker Compose Services
 
+### TTS Engine Performance Comparison
+
+![TTS Latency Chart](https://quickchart.io/chart?w=700&h=400&c=%7B%22type%22%3A%20%22bar%22%2C%20%22data%22%3A%20%7B%22labels%22%3A%20%5B%22Kokoro%20%28GPU%29%22%2C%20%22XTTS%20v2%20%28GPU%29%22%2C%20%22Edge%20TTS%20%28Cloud%29%22%5D%2C%20%22datasets%22%3A%20%5B%7B%22label%22%3A%20%22Latency%20%28ms%29%22%2C%20%22data%22%3A%20%5B460%2C%201000%2C%202300%5D%2C%20%22backgroundColor%22%3A%20%5B%22rgba%2874%2C%20144%2C%20226%2C%200.8%29%22%2C%20%22rgba%2875%2C%20192%2C%2075%2C%200.8%29%22%2C%20%22rgba%28255%2C%20159%2C%2064%2C%200.8%29%22%5D%2C%20%22borderColor%22%3A%20%5B%22rgb%2874%2C%20144%2C%20226%29%22%2C%20%22rgb%2875%2C%20192%2C%2075%29%22%2C%20%22rgb%28255%2C%20159%2C%2064%29%22%5D%2C%20%22borderWidth%22%3A%202%7D%5D%7D%2C%20%22options%22%3A%20%7B%22title%22%3A%20%7B%22display%22%3A%20true%2C%20%22text%22%3A%20%22TTS%20Engine%20Latency%20Comparison%22%7D%2C%20%22scales%22%3A%20%7B%22yAxes%22%3A%20%5B%7B%22ticks%22%3A%20%7B%22beginAtZero%22%3A%20true%7D%2C%20%22title%22%3A%20%7B%22display%22%3A%20true%2C%20%22text%22%3A%20%22Latency%20%28ms%29%22%7D%7D%5D%7D%2C%20%22plugins%22%3A%20%7B%22datalabels%22%3A%20%7B%22display%22%3A%20true%2C%20%22align%22%3A%20%22top%22%2C%20%22anchor%22%3A%20%22end%22%2C%20%22font%22%3A%20%7B%22size%22%3A%2012%2C%20%22weight%22%3A%20%22bold%22%7D%7D%7D%7D%7D)
+
+### Service Registry
+
 | Service | Container | Image | Ports | GPU | Notes |
 |---------|-----------|-------|-------|-----|-------|
 | `voice-server` | `openclaw-voice-server` | Build `./server` | 3200, 3443 (host network) | No | Node.js + Python speaker ID on :3201 |
@@ -96,10 +106,10 @@ Extraction pipeline:
 
 ## Car Mode / Noise Detection
 
-Auto noise detection tracks ambient RMS over a 30-second rolling window with hysteresis:
+Auto noise detection tracks ambient RMS over a 30-second rolling window (last 30 RMS values) with hysteresis:
 
-- **Quiet → Noisy**: avg RMS > 500 (e.g., car engine, road noise)
-- **Noisy → Quiet**: avg RMS < 300 sustained for 15+ seconds
+- **Quiet → Noisy**: avg RMS > 500 (e.g., car engine, road noise) → sets `noiseTracker.isNoisy = true`
+- **Noisy → Quiet**: avg RMS < 300 for 15+ consecutive readings → sets `noiseTracker.isNoisy = false`
 - **Noisy profile effects**:
   - Require 4+ words in ambient transcripts (vs 3 in quiet)
   - Stricter Whisper confidence threshold: `avg_logprob < -0.5` (vs `-0.6`)
@@ -233,7 +243,11 @@ All engines produce audio that's sent as base64 in `audio_chunk` messages. Engin
 
 ## WebSocket Protocol Specification
 
-### Connection Flow
+### Connection Flow Diagram
+
+![Connection Flow](https://kroki.io/mermaid/png/eNpdj9FKwzAUQN_9ijCfpyJbBZFBdWMWaxlrwAcRuUnvumBJSxIFoZ_h-0C_QfwtP2FNUtdg-1I4596eWypotoTOj0j3JEWFj6Pf3ccPSebp4oqp09kDCCNkOXpyBlUgtVO-CV3HWX6zTq6TbOnUnFKyUjVHrYOJrZAvdmL3Rehtkt392Wl6T5YoUUGwP28QvP1J8tUiPtiU5iR-LUTdi4deMh7PWrCEaJSm9YlDrOPGfnElGkMUchRvWLS-bGh0oo3SBpTRrW8Zqhwvaomt--9Q0dOTDjNQJT4LGSj9bks5SI7V_3Ft3rsr3CkbUVWXx3hm34D5OzycnMN0Mw2h2-8hsMkF4wH0aR5GEWMR7AGqj5qT)
+
+**Connection Sequence:**
 
 ```
 Client                              Server
@@ -273,6 +287,12 @@ Client → server messages can include `cseq` for deduplication. The server trac
 
 ### Smart Listen Flow
 
+**Data Processing Pipeline:**
+
+![Data Flow Diagram](https://kroki.io/mermaid/png/eNptkNFOwjAUhu99ipN6TRw6JhpDMgYMEo3oFrhYuOjGmSyr3dJ1wSV7Bl7BGx_QR7B0DWJiL3rzff_fnvMmaLmDx9cLUMeNyPfn4QtWRZYgLHhZy4dYXI2W3hO49TYryAZ6vVG7dlcwphU6dgvjiKwxDookx05-qbFGstGFY63TquFJC54yd1lVooAgDLviQki4syzrP38SkaBEmit_MfnVb66tvtE9rYf4IVuYRuS5RO4xuteuTyXuaWPMiTZPdTwtVEKTaUekQPoOYZEjr1qYqaeRS-QJ6rKgZJmUKEzbTGeWx0GM1YIfkSUVlDFkOhKGgbF9bev9nbY2j4jHMhXu5mK0iWmS_6k_jgXerua5-tBcA31VsmEILqQZY_eXabod2OkZmBsw7Ce3Q_sMTA1w7HiQOj_WOJce)
+
+**Smart Listen Audio Processing:**
+
 ```
 Client                              Server
   │                                    │
@@ -293,7 +313,11 @@ Client                              Server
   │◄─── smart_status {listening} ─────│
 ```
 
-### State Machine
+### State Machine Diagram
+
+![State Machine](https://kroki.io/mermaid/png/eNpdj9FKwzAUQN_9ijCfpyJbBZFBdWMWaxlrwAcRuUnvumBJSxIFoZ_h-0C_QfwtP2FNUtdg-1I4596eWypotoTOj0j3JEUFj6Pf3ccPSebp4oqp09kDCCNkOXpyBlUgtVO-CV3HWX6zTq6TbOnUnFKyUjVHrYOJrZAvdmL3Rehtkt392Wl6T5YoUUGwP28QvP1J8tUiPtiU5iR-LUTdi4deMh7PWrCEaJSm9YlDrOPGfnElGkMUchRvWLS-bGh0oo3SBpTRrW8Zqhwvaomt--9Q0dOTDjNQJT4LGSj9bks5SI7V_3Ft3rsr3CkbUVWXx3hm34D5OzycnMN0Mw2h2-8hsMkF4wH0aR5GEWMR7AGqj5qT)
+
+**State Transitions:**
 
 ```
 idle ──► transcribing ──► thinking ──► speaking ──► idle
