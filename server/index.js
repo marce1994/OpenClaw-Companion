@@ -1109,6 +1109,7 @@ async function handleTextMessage(ws, text, prefix) {
           }
         } catch (e) {
           console.error(`❌ TTS ${idx}:`, e.message);
+          logActivity('error', `TTS generation failed: ${e.message}`, 'error');
         }
       })();
       sentencePromises.push(ttsPromise);
@@ -1116,6 +1117,7 @@ async function handleTextMessage(ws, text, prefix) {
     async (fullResponse, error) => {
       if (error && !ac.signal.aborted) {
         console.error('❌ Stream error:', error.message);
+        logActivity('error', `Stream error: ${error.message}`, 'error');
         send(ws, { type: 'error', message: error.message });
       }
 
@@ -1602,14 +1604,54 @@ function getActiveClient() {
   return null;
 }
 
+// ─── Activity Logger (Ring Buffer) ─────────────────────────────────────────
+
+/** Global activity log: last 20 significant events */
+const activityLog = [];
+const ACTIVITY_LOG_SIZE = 20;
+
+/**
+ * Log an activity event to the in-memory ring buffer.
+ * @param {string} type - Event type (connected, disconnected, meeting_join, meeting_leave, error, etc.)
+ * @param {string} message - Event description
+ * @param {string} [level='info'] - Event level (info, warning, error)
+ */
+function logActivity(type, message, level = 'info') {
+  const event = {
+    timestamp: new Date().toISOString(),
+    type,
+    message,
+    level,
+  };
+  activityLog.push(event);
+  if (activityLog.length > ACTIVITY_LOG_SIZE) {
+    activityLog.shift();
+  }
+}
+
 // ─── Dashboard Generator ───────────────────────────────────────────────────
 
-function generateDashboardHtml(orchestrator) {
+async function getSpeakerCount() {
+  try {
+    const profiles = await getSpeakerProfiles();
+    return profiles.count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function generateDashboardHtml(orchestrator, wsClientsCount = 0, speakerCount = 0) {
   const status = orchestrator.getStatus();
   const uptime = Math.floor(process.uptime());
   const upHours = Math.floor(uptime / 3600);
   const upMinutes = Math.floor((uptime % 3600) / 60);
+  const upSeconds = uptime % 60;
   const memUsage = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+  const maxHeap = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
+  
+  // System overview cards
+  const gateWayStatus = gwConnected ? '🟢 Connected' : '🔴 Offline';
+  const ttsStatus = TTS_ENGINE === 'kokoro' ? '🟢 Kokoro' : (TTS_ENGINE === 'xtts' ? '🟢 XTTS' : '🟢 Edge');
   
   const meetingsHtml = status.meetings.map(m => `
     <div class="meeting-card">
@@ -1623,42 +1665,63 @@ function generateDashboardHtml(orchestrator) {
     </div>
   `).join('');
 
+  // Activity log HTML
+  const activityHtml = activityLog.slice().reverse().map((evt) => {
+    let icon = 'ℹ️';
+    if (evt.level === 'error') icon = '❌';
+    else if (evt.level === 'warning') icon = '⚠️';
+    else if (evt.type === 'connected') icon = '🟢';
+    else if (evt.type === 'disconnected') icon = '🔴';
+    else if (evt.type === 'meeting_join') icon = '🚪';
+    else if (evt.type === 'meeting_leave') icon = '👋';
+    
+    const time = new Date(evt.timestamp);
+    const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
+    
+    return `<div class="activity-item level-${evt.level}"><span class="activity-icon">${icon}</span><span class="activity-time">${timeStr}</span> <span class="activity-msg">${evt.message}</span></div>`;
+  }).join('');
+
   const html = `
 <!DOCTYPE html>
 <html>
 <head>
-  <title>OpenClaw Companion — Meetings Dashboard</title>
+  <title>OpenClaw Companion — Monitoring Dashboard</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="15">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #0f172a;
       color: #e2e8f0;
       padding: 20px;
+      line-height: 1.5;
     }
     .container {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
     }
     header {
-      text-align: center;
-      margin-bottom: 30px;
-      border-bottom: 2px solid #64748b;
-      padding-bottom: 20px;
-    }
-    h1 {
-      font-size: 2.5em;
-      margin-bottom: 10px;
       background: linear-gradient(135deg, #06b6d4, #ec4899);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+      margin-bottom: 30px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #334155;
     }
-    .stats {
+    h1 {
+      font-size: 2.5em;
+      margin-bottom: 5px;
+    }
+    .subtitle {
+      color: #94a3b8;
+      font-size: 0.95em;
+    }
+    .grid-2 {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
       gap: 15px;
       margin-bottom: 30px;
     }
@@ -1666,28 +1729,66 @@ function generateDashboardHtml(orchestrator) {
       background: #1e293b;
       border: 1px solid #334155;
       border-radius: 8px;
-      padding: 15px;
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+    .stat-icon {
+      font-size: 2.5em;
+      min-width: 60px;
       text-align: center;
     }
+    .stat-content {
+      flex: 1;
+    }
     .stat-label {
-      font-size: 0.9em;
+      font-size: 0.85em;
       color: #94a3b8;
-      margin-bottom: 8px;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     .stat-value {
-      font-size: 2em;
+      font-size: 1.8em;
       font-weight: bold;
       color: #06b6d4;
     }
-    .meetings-section {
-      margin-top: 40px;
+    .status-healthy { color: #10b981; }
+    .status-warning { color: #f59e0b; }
+    .status-error { color: #ef4444; }
+    .status-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .indicator-green { background: #10b981; animation: pulse-green 2s infinite; }
+    .indicator-yellow { background: #f59e0b; animation: pulse-yellow 2s infinite; }
+    .indicator-red { background: #ef4444; animation: pulse-red 2s infinite; }
+    @keyframes pulse-green {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    @keyframes pulse-yellow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    @keyframes pulse-red {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .section {
+      margin-bottom: 30px;
     }
     .section-title {
-      font-size: 1.5em;
+      font-size: 1.3em;
       margin-bottom: 15px;
       color: #e2e8f0;
       border-left: 4px solid #06b6d4;
       padding-left: 12px;
+      font-weight: 600;
     }
     .meetings-grid {
       display: grid;
@@ -1700,24 +1801,30 @@ function generateDashboardHtml(orchestrator) {
       border-radius: 8px;
       padding: 15px;
       border-left: 4px solid #06b6d4;
+      transition: border-left-color 0.3s;
+    }
+    .meeting-card:hover {
+      border-left-color: #ec4899;
     }
     .meeting-title {
-      font-weight: bold;
+      font-weight: 600;
       margin-bottom: 5px;
       color: #06b6d4;
+      font-size: 0.95em;
     }
     .meeting-url {
-      font-size: 0.85em;
-      color: #94a3b8;
+      font-size: 0.8em;
+      color: #64748b;
       margin-bottom: 8px;
       word-break: break-all;
+      font-family: 'Monaco', monospace;
     }
     .meeting-status {
       display: inline-block;
       padding: 4px 10px;
       border-radius: 4px;
-      font-size: 0.85em;
-      font-weight: bold;
+      font-size: 0.8em;
+      font-weight: 600;
       margin-bottom: 8px;
     }
     .meeting-status.pending { background: #f59e0b; color: #000; }
@@ -1725,72 +1832,200 @@ function generateDashboardHtml(orchestrator) {
     .meeting-status.running { background: #10b981; color: #fff; }
     .meeting-status.ended { background: #6b7280; color: #fff; }
     .meeting-info {
-      font-size: 0.85em;
+      font-size: 0.8em;
       color: #94a3b8;
       display: flex;
-      gap: 15px;
+      gap: 12px;
       margin-top: 10px;
+      flex-wrap: wrap;
     }
     .empty-state {
       text-align: center;
-      padding: 40px;
+      padding: 40px 20px;
       color: #64748b;
+      background: #1e293b;
+      border-radius: 8px;
+      border: 1px dashed #334155;
     }
-    .refresh-info {
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 15px;
+    }
+    .service-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 15px;
+    }
+    .service-name {
+      font-weight: 600;
+      color: #e2e8f0;
+      margin-bottom: 8px;
+      font-size: 0.95em;
+    }
+    .service-url {
+      font-size: 0.75em;
+      color: #64748b;
+      word-break: break-all;
+      font-family: 'Monaco', monospace;
+      margin-bottom: 8px;
+    }
+    .activity-log {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 15px;
+      font-size: 0.85em;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .activity-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid #334155;
+      color: #94a3b8;
+    }
+    .activity-item:last-child {
+      border-bottom: none;
+    }
+    .activity-item.level-error {
+      color: #ef4444;
+    }
+    .activity-item.level-warning {
+      color: #f59e0b;
+    }
+    .activity-item.level-info {
+      color: #06b6d4;
+    }
+    .activity-icon {
+      min-width: 20px;
       text-align: center;
-      color: #64748b;
-      font-size: 0.9em;
-      margin-top: 20px;
     }
-    footer {
+    .activity-time {
+      font-family: 'Monaco', monospace;
+      color: #64748b;
+      font-size: 0.75em;
+      min-width: 60px;
+    }
+    .activity-msg {
+      flex: 1;
+    }
+    .footer {
       text-align: center;
       margin-top: 40px;
       padding-top: 20px;
       border-top: 1px solid #334155;
       color: #64748b;
-      font-size: 0.9em;
+      font-size: 0.85em;
+    }
+    .refresh-note {
+      text-align: right;
+      color: #64748b;
+      font-size: 0.8em;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .meetings-grid { grid-template-columns: 1fr; }
+      .service-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 1.8em; }
+      .stat-card { flex-direction: column; text-align: center; }
+      .stat-icon { font-size: 2em; }
     }
   </style>
 </head>
 <body>
   <div class="container">
+    <div class="refresh-note">🔄 Refreshing every 15 seconds</div>
+    
     <header>
       <h1>🎬 OpenClaw Companion</h1>
-      <p>Meetings Dashboard</p>
+      <div class="subtitle">Monitoring Dashboard • Real-time System Status</div>
     </header>
 
-    <div class="stats">
-      <div class="stat-card">
-        <div class="stat-label">Active Meetings</div>
-        <div class="stat-value">${status.activeMeetings}/${status.maxMeetings}</div>
+    <section class="section">
+      <div class="section-title">📊 System Overview</div>
+      <div class="grid-2">
+        <div class="stat-card">
+          <div class="stat-icon">⏱️</div>
+          <div class="stat-content">
+            <div class="stat-label">Server Uptime</div>
+            <div class="stat-value">${upHours}h ${upMinutes}m ${upSeconds}s</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">💾</div>
+          <div class="stat-content">
+            <div class="stat-label">Memory Usage</div>
+            <div class="stat-value">${memUsage}/${maxHeap}MB</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🔌</div>
+          <div class="stat-content">
+            <div class="stat-label">WebSocket Connections</div>
+            <div class="stat-value">${wsClientsCount}</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🌐</div>
+          <div class="stat-content">
+            <div class="stat-label">Gateway WS</div>
+            <div class="stat-value"><span class="status-indicator ${gwConnected ? 'indicator-green' : 'indicator-red'}"></span>${gateWayStatus}</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🔊</div>
+          <div class="stat-content">
+            <div class="stat-label">TTS Engine</div>
+            <div class="stat-value">${ttsStatus}</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🎤</div>
+          <div class="stat-content">
+            <div class="stat-label">Speaker Profiles</div>
+            <div class="stat-value">${speakerCount}</div>
+          </div>
+        </div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">Uptime</div>
-        <div class="stat-value">${upHours}h ${upMinutes}m</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Memory Usage</div>
-        <div class="stat-value">${memUsage}MB</div>
-      </div>
-    </div>
+    </section>
 
-    <div class="meetings-section">
+    <section class="section">
       <div class="section-title">📞 Active Meetings</div>
-      ${meetingsHtml ? `<div class="meetings-grid">${meetingsHtml}</div>` : '<div class="empty-state">No active meetings</div>'}
-    </div>
+      ${meetingsHtml ? `<div class="meetings-grid">${meetingsHtml}</div>` : '<div class="empty-state">✨ No active meetings</div>'}
+    </section>
 
-    <div class="refresh-info">
-      🔄 Auto-refresh in 10 seconds...
-    </div>
+    <section class="section">
+      <div class="section-title">🖥️ GPU Services</div>
+      <div class="service-grid">
+        <div class="service-card">
+          <div class="service-name">Whisper ASR</div>
+          <div class="service-url">${WHISPER_URL}</div>
+          <div style="font-size: 0.8em; color: #94a3b8;">Speech-to-text service</div>
+        </div>
+        <div class="service-card">
+          <div class="service-name">Kokoro TTS</div>
+          <div class="service-url">${KOKORO_URL}</div>
+          <div style="font-size: 0.8em; color: #94a3b8;">Text-to-speech engine</div>
+        </div>
+      </div>
+    </section>
 
-    <footer>
-      <p>OpenClaw Voice Server v2.0 • Meetings Orchestrator</p>
-    </footer>
+    <section class="section">
+      <div class="section-title">📋 Recent Activity</div>
+      <div class="activity-log">
+        ${activityHtml || '<div class="activity-item">✨ No activity yet</div>'}
+      </div>
+    </section>
+
+    <div class="footer">
+      <p>OpenClaw Voice Server v2.0 • Real-time Monitoring • Last updated: ${new Date().toLocaleTimeString()}</p>
+    </div>
   </div>
-
-  <script>
-    setTimeout(() => location.reload(), 10000);
-  </script>
 </body>
 </html>
   `;
@@ -1818,8 +2053,39 @@ const requestHandler = (req, res) => {
   }
 
   if (req.url === '/health') {
+    setCors();
+    const uptime = process.uptime();
+    const memUsage = process.memoryUsage();
+    const status = orchestrator.getStatus();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end('{"status":"ok"}');
+    res.end(JSON.stringify({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor(uptime),
+      memory: {
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+      },
+      websockets: {
+        connected: wss.clients.size,
+      },
+      gateway: {
+        websocket: gwConnected ? 'connected' : 'disconnected',
+        url: GATEWAY_WS_URL,
+      },
+      tts: {
+        engine: TTS_ENGINE,
+        kokoro_url: KOKORO_URL,
+      },
+      whisper: {
+        url: WHISPER_URL,
+      },
+      meetings: {
+        active: status.activeMeetings,
+        max: status.maxMeetings,
+      },
+    }));
+    return;
   } else if (req.url === '/device/capabilities' && req.method === 'GET') {
     setCors();
     const client = getActiveClient();
@@ -1881,9 +2147,11 @@ const requestHandler = (req, res) => {
           return;
         }
         const result = await orchestrator.joinMeeting(meetUrl, botName || 'Jarvis', GATEWAY_TOKEN, GATEWAY_WS_URL);
+        logActivity('meeting_join', `${botName || 'Jarvis'} joined meeting`, 'info');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
+        logActivity('error', `Meeting join failed: ${err.message}`, 'error');
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
@@ -1902,9 +2170,11 @@ const requestHandler = (req, res) => {
           return;
         }
         const result = await orchestrator.leaveMeeting(meetingId);
+        logActivity('meeting_leave', `Meeting ${meetingId.slice(0, 8)} ended`, 'info');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
+        logActivity('error', `Meeting leave failed: ${err.message}`, 'error');
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
@@ -1927,9 +2197,14 @@ const requestHandler = (req, res) => {
       res.end(JSON.stringify(status));
     } else if (meetingId === 'dashboard') {
       // /meetings/dashboard endpoint
-      const dashboardHtml = generateDashboardHtml(orchestrator);
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(dashboardHtml);
+      setCors();
+      (async () => {
+        const wsClientsCount = wss.clients.size;
+        const speakerCount = await getSpeakerCount();
+        const dashboardHtml = generateDashboardHtml(orchestrator, wsClientsCount, speakerCount);
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(dashboardHtml);
+      })();
     } else {
       // /meetings/:id endpoint
       const meeting = orchestrator.getMeetingStatus(meetingId);
@@ -1980,6 +2255,7 @@ if (httpsServer) {
 
 function handleConnection(ws) {
   console.log('🔌 New WS connection');
+  logActivity('connected', `New WebSocket connection (total: ${wss.clients.size})`, 'info');
   ws._authenticated = false;
   const authTimer = setTimeout(() => { if (!ws._authenticated) ws.close(); }, 5000);
 
@@ -2178,6 +2454,7 @@ function handleConnection(ws) {
 
   ws.on('close', () => {
     clearTimeout(authTimer);
+    logActivity('disconnected', `WebSocket disconnected (total: ${wss.clients.size})`, 'info');
     // Reject all pending device commands
     if (ws._pendingCommands) {
       for (const [id, pending] of Object.entries(ws._pendingCommands)) {
