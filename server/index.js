@@ -27,16 +27,6 @@ const BOT_NAME = (process.env.BOT_NAME || 'jarvis').toLowerCase();
 const SPEAKER_URL = process.env.SPEAKER_URL || 'http://127.0.0.1:3201';
 const OWNER_NAME = process.env.OWNER_NAME || 'Pablo';
 
-// ─── Meet Orchestrator & Calendar ────────────────────────────────────────────
-const { MeetOrchestrator } = require('./orchestrator');
-const { CalendarAutoJoin } = require('./calendar');
-const { generateDashboard } = require('./dashboard');
-
-const orchestrator = new MeetOrchestrator({
-  maxMeetings: parseInt(process.env.MAX_MEETINGS || '5', 10),
-});
-const calendar = new CalendarAutoJoin(orchestrator, process.env.GOOGLE_CALENDAR_ICS || '');
-
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const TEXT_FILE_EXTENSIONS = new Set(['txt', 'md', 'json', 'csv', 'js', 'py', 'html', 'css', 'xml', 'yaml', 'yml', 'log']);
 const MAX_CONTEXT_LINES = 20;
@@ -1990,39 +1980,33 @@ const requestHandler = (req, res) => {
     });
   } else if (req.url === '/meetings/status' && req.method === 'GET') {
     setCors();
-    const whisperOk = await pingServiceQuick(process.env.WHISPER_URL || 'http://127.0.0.1:9000');
-    const kokoroOk = await pingServiceQuick('http://127.0.0.1:8880');
+    const status = orchestrator.getStatus();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      activeMeetings: orchestrator.meetings.size,
-      maxMeetings: orchestrator.maxMeetings,
-      gpuServices: { whisper: whisperOk ? 'online' : 'offline', kokoro: kokoroOk ? 'online' : 'offline' },
-    }));
+    res.end(JSON.stringify(status));
   } else if (req.url === '/meetings/dashboard' && req.method === 'GET') {
-    try {
-      const html = await generateDashboard(orchestrator);
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(html);
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Dashboard error: ' + e.message);
-    }
+    setCors();
+    const html = generateDashboardHtml(orchestrator);
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
   } else if (req.url?.startsWith('/meetings/') && req.method === 'GET') {
     setCors();
     const id = req.url.split('/meetings/')[1];
     if (id) {
-      const status = await orchestrator.getMeetingStatus(id);
-      if (status) {
+      const meeting = orchestrator.getMeetingStatus(id);
+      if (meeting) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(status));
+        res.end(JSON.stringify(meeting));
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Meeting not found' }));
       }
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
     }
   } else if (req.url === '/meetings' && req.method === 'GET') {
     setCors();
-    const list = await orchestrator.listMeetings();
+    const list = orchestrator.listMeetings();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(list));
   } else {
