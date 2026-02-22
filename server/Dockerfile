@@ -26,6 +26,8 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 COPY index.js .
+COPY orchestrator.js .
+COPY calendar.js .
 COPY speaker_service.py .
 COPY start.sh .
 RUN chmod +x start.sh

@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
 const MeetOrchestrator = require('./orchestrator');
-const CalendarAutoJoin = require('./calendar');
+const { CalendarAutoJoin } = require('./calendar');
 let sharp;
 try { sharp = require('sharp'); } catch { sharp = null; }
 
@@ -44,9 +44,6 @@ const orchestrator = new MeetOrchestrator(
   process.env.DOCKER_SOCKET || '/var/run/docker.sock',
   parseInt(process.env.MAX_MEETINGS || '5', 10)
 );
-
-/** Clean up orphaned containers on startup */
-orchestrator.cleanupOrphans().catch(err => console.error(`Failed to cleanup orphans: ${err.message}`));
 
 /** Calendar auto-join (if ICS URL provided) */
 const calendar = new CalendarAutoJoin(
@@ -2205,7 +2202,7 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Voice WS server on 0.0.0.0:${PORT}`);
 
   // Start Meet Orchestrator & Calendar
-  orchestrator.start().catch(e => console.error('Orchestrator start error:', e.message));
+  orchestrator.cleanupOrphans().catch(e => console.error('Orchestrator cleanup error:', e.message));
   calendar.start();
 
   // Start Gateway WS connection if enabled
@@ -2222,7 +2219,7 @@ if (httpsServer) httpsServer.listen(WSS_PORT, '0.0.0.0', () => console.log(`✅ 
 
 process.on('SIGTERM', async () => {
   console.log(`🛑 SIGTERM received, shutting down gracefully...`);
-  await calendar.shutdown();
+  calendar.stop();
   await orchestrator.shutdown();
   httpServer.close(() => console.log('HTTP server closed'));
   if (httpsServer) httpsServer.close(() => console.log('HTTPS server closed'));
@@ -2231,7 +2228,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   console.log(`🛑 SIGINT received, shutting down gracefully...`);
-  await calendar.shutdown();
+  calendar.stop();
   await orchestrator.shutdown();
   httpServer.close(() => console.log('HTTP server closed'));
   if (httpsServer) httpsServer.close(() => console.log('HTTPS server closed'));

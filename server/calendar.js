@@ -18,9 +18,10 @@ class CalendarAutoJoin {
    * @param {import('./orchestrator').MeetOrchestrator} orchestrator
    * @param {string} icsUrl — Google Calendar ICS URL
    */
-  constructor(orchestrator, icsUrl) {
+  constructor(orchestrator, icsUrl, botName = 'Jarvis') {
     this.orchestrator = orchestrator;
     this.icsUrl = icsUrl;
+    this.botName = botName;
     this._timers = [];       // setTimeout refs for upcoming joins
     this._fetchTimer = null;
     this._joinedEvents = new Set(); // event UIDs already joined (avoid duplicates)
@@ -80,7 +81,7 @@ class CalendarAutoJoin {
           this._joinedEvents.add(eventKey);
           console.log(`📅 Auto-joining: "${title}" → ${meetUrl}`);
           try {
-            await this.orchestrator.joinMeeting(meetUrl, title);
+            await this.orchestrator.joinMeeting(meetUrl, this.botName);
           } catch (e) {
             console.error(`📅 Auto-join failed for "${title}": ${e.message}`);
           }
