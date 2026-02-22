@@ -1208,6 +1208,7 @@ function handleMultimodalMessage(ws, messages, logPrefix, userContentForHistory)
           }
         } catch (e) {
           console.error(`❌ TTS ${idx}:`, e.message);
+          logActivity('error', `TTS generation failed: ${e.message}`, 'error');
         }
       })();
       sentencePromises.push(ttsPromise);
@@ -1215,6 +1216,7 @@ function handleMultimodalMessage(ws, messages, logPrefix, userContentForHistory)
     async (fullResponse, error) => {
       if (error && !ac.signal.aborted) {
         console.error('❌ Stream error:', error.message);
+        logActivity('error', `Multimodal stream error: ${error.message}`, 'error');
         send(ws, { type: 'error', message: error.message });
       }
 
