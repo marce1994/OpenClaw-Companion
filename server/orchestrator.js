@@ -1,250 +1,335 @@
 /**
- * Meet Orchestrator — manages multiple ephemeral meet-bot worker containers
- * via Docker API. Each worker is an isolated meet-bot:v6 container with its
- * own Chromium, Xvfb, PulseAudio, and Live2D instance.
+ * MeetOrchestrator — Manages ephemeral meet-bot worker containers
  *
- * Workers connect to the Gateway with unique session keys (meet-{shortId}).
- * Shared GPU services (Whisper, Kokoro) are accessed via localhost (host network).
+ * Responsibilities:
+ * - Create/destroy worker containers via Docker API
+ * - Track container lifecycle and health
+ * - Auto-cleanup orphaned containers on startup
+ * - Enforce admission timeout (5 min) and max concurrent meetings
+ *
+ * Worker container lifecycle:
+ * 1. Created with unique GW_SESSION_KEY=meet-{shortId}
+ * 2. Connects to Gateway WS with that key
+ * 3. Gateway sends "admitted" event → worker starts meeting
+ * 4. Worker runs until meeting ends or container times out
+ * 5. Container removed from Docker
  */
 
-const crypto = require('crypto');
 const Docker = require('dockerode');
-
-const IMAGE = 'meet-bot:v6';
-const LABEL_ROLE = 'openclaw.companion.role';
-const LABEL_MEETING = 'openclaw.companion.meeting';
-const ROLE_VALUE = 'meet-worker';
-
-const HEALTH_POLL_MS = 30_000;       // Check container health every 30s
-const ADMISSION_TIMEOUT_MS = 5 * 60_000; // 5 min to get admitted or destroy
+const crypto = require('crypto');
 
 class MeetOrchestrator {
+  constructor(dockerSocket = '/var/run/docker.sock', maxConcurrentMeetings = 5) {
+    this.docker = new Docker({ socketPath: dockerSocket });
+    this.maxMeetings = maxConcurrentMeetings;
+    this.meetings = new Map(); // meetingId → {containerId, startedAt, status, meetUrl, botName, participants, transcriptCount}
+    this.admissionTimers = new Map(); // meetingId → timeoutHandle
+    this.healthCheckInterval = null;
+    
+    console.log(`🎬 MeetOrchestrator initialized (max ${maxConcurrentMeetings} concurrent meetings)`);
+  }
+
   /**
-   * @param {object} opts
-   * @param {string} [opts.dockerSocket] — path to Docker socket
-   * @param {number} [opts.maxMeetings] — max concurrent meetings (default 5)
+   * Generate a unique short ID for the meeting
    */
-  constructor(opts = {}) {
-    this.docker = new Docker({ socketPath: opts.dockerSocket || '/var/run/docker.sock' });
-    this.maxMeetings = opts.maxMeetings || 5;
-
-    // meetingId → { containerId, meetUrl, botName, startedAt, status, container }
-    this.meetings = new Map();
-    this._healthTimer = null;
+  _generateShortId() {
+    return crypto.randomBytes(6).toString('hex');
   }
 
-  /** Start orchestrator: clean up orphans and begin health monitoring */
-  async start() {
-    await this._cleanupOrphans();
-    this._healthTimer = setInterval(() => this._healthCheck(), HEALTH_POLL_MS);
-    console.log(`🎬 Orchestrator started (max ${this.maxMeetings} meetings)`);
-  }
+  /**
+   * Cleanup orphaned meet-worker containers on startup
+   * Finds containers with label openclaw.companion.role=meet-worker and removes them
+   */
+  async cleanupOrphans() {
+    try {
+      const containers = await this.docker.listContainers({
+        all: true,
+        filters: {
+          label: ['openclaw.companion.role=meet-worker']
+        }
+      });
 
-  /** Stop orchestrator: clear timers */
-  stop() {
-    if (this._healthTimer) clearInterval(this._healthTimer);
-    for (const m of this.meetings.values()) {
-      if (m._admissionTimer) clearTimeout(m._admissionTimer);
+      for (const containerInfo of containers) {
+        const container = this.docker.getContainer(containerInfo.Id);
+        try {
+          if (containerInfo.State !== 'exited') {
+            console.log(`🧹 Stopping orphaned meet-worker: ${containerInfo.Names[0] || containerInfo.Id.slice(0, 12)}`);
+            await container.stop({ t: 10 });
+          }
+          console.log(`🧹 Removing orphaned meet-worker: ${containerInfo.Names[0] || containerInfo.Id.slice(0, 12)}`);
+          await container.remove();
+        } catch (err) {
+          console.error(`⚠️ Failed to remove orphaned container ${containerInfo.Id.slice(0, 12)}: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      console.error(`⚠️ Orphan cleanup failed: ${err.message}`);
     }
-    console.log('🎬 Orchestrator stopped');
   }
 
   /**
-   * Join a meeting — spin up a new worker container.
-   * @param {string} meetUrl — Google Meet URL
-   * @param {string} [botName='Jarvis'] — display name for the bot
-   * @returns {{ meetingId: string, status: string }}
+   * Create and start a worker container for a meeting
    */
-  async joinMeeting(meetUrl, botName = 'Jarvis') {
-    if (this.meetings.size >= this.maxMeetings) {
+  async joinMeeting(meetUrl, botName = 'Jarvis', gatewayToken = '', gatewayWsUrl = 'ws://127.0.0.1:18789') {
+    // Check max concurrent meetings
+    const activeMeetings = Array.from(this.meetings.values()).filter(m => 
+      m.status === 'pending' || m.status === 'admitted' || m.status === 'running'
+    );
+    
+    if (activeMeetings.length >= this.maxMeetings) {
       throw new Error(`Max concurrent meetings (${this.maxMeetings}) reached`);
     }
 
-    const shortId = crypto.randomBytes(4).toString('hex');
-    const meetingId = `meet-${shortId}`;
-    const sessionKey = meetingId;
+    const meetingId = this._generateShortId();
+    const sessionKey = `meet-${meetingId}`;
+    const containerName = `meet-bot-${meetingId}`;
 
-    const env = [
-      `MEETING_URL=${meetUrl}`,
-      `BOT_NAME=${botName}`,
-      `GATEWAY_WS_URL=${process.env.GATEWAY_WS_URL || 'ws://127.0.0.1:18789'}`,
-      `GATEWAY_TOKEN=${process.env.GATEWAY_TOKEN || ''}`,
-      `GW_SESSION_KEY=${sessionKey}`,
-      `WHISPER_URL=${process.env.WHISPER_URL || 'http://127.0.0.1:9000'}`,
-      `KOKORO_URL=http://127.0.0.1:8880`,
-      `HAIKU_MODEL=anthropic/claude-haiku-4-5`,
-    ];
+    try {
+      // Create container
+      const container = await this.docker.createContainer({
+        Image: 'meet-bot:v6',
+        name: containerName,
+        Hostname: containerName,
+        HostConfig: {
+          NetworkMode: 'host',
+          AutoRemove: true,
+        },
+        Labels: {
+          'openclaw.companion.meeting': meetingId,
+          'openclaw.companion.role': 'meet-worker',
+        },
+        Env: [
+          `MEETING_URL=${meetUrl}`,
+          `BOT_NAME=${botName}`,
+          `GATEWAY_WS_URL=${gatewayWsUrl}`,
+          `GATEWAY_TOKEN=${gatewayToken}`,
+          `GW_SESSION_KEY=${sessionKey}`,
+          `WHISPER_URL=http://127.0.0.1:9000`,
+          `KOKORO_URL=http://127.0.0.1:8880`,
+          `HAIKU_MODEL=anthropic/claude-haiku-4-5`,
+        ],
+      });
 
-    console.log(`🚀 Starting worker ${meetingId} for ${meetUrl}`);
+      // Start container
+      await container.start();
 
-    const container = await this.docker.createContainer({
-      Image: IMAGE,
-      name: `meet-worker-${shortId}`,
-      Env: env,
-      Labels: {
-        [LABEL_MEETING]: meetingId,
-        [LABEL_ROLE]: ROLE_VALUE,
-      },
-      HostConfig: {
-        NetworkMode: 'host',
-        AutoRemove: true,
-        // Give containers enough shm for Chromium
-        ShmSize: 2 * 1024 * 1024 * 1024, // 2GB
-      },
-    });
+      // Register meeting
+      this.meetings.set(meetingId, {
+        containerId: container.id,
+        startedAt: Date.now(),
+        status: 'pending', // Waiting for "admitted" from Gateway
+        meetUrl,
+        botName,
+        participants: 0,
+        transcriptCount: 0,
+        containerName,
+      });
 
-    await container.start();
+      console.log(`🎬 Started worker for meeting ${meetingId}: ${meetUrl}`);
 
-    const meeting = {
-      meetingId,
-      containerId: container.id,
-      meetUrl,
-      botName,
-      sessionKey,
-      startedAt: new Date(),
-      status: 'starting',
-      container,
-      _admissionTimer: setTimeout(() => this._admissionTimeout(meetingId), ADMISSION_TIMEOUT_MS),
-    };
+      // Set admission timeout (5 min)
+      const admissionTimer = setTimeout(() => {
+        this._destroyMeeting(meetingId, 'Admission timeout');
+      }, 5 * 60 * 1000);
+      this.admissionTimers.set(meetingId, admissionTimer);
 
-    this.meetings.set(meetingId, meeting);
-    console.log(`✅ Worker ${meetingId} started (container ${container.id.substring(0, 12)})`);
+      // Start health check if not already running
+      if (!this.healthCheckInterval) {
+        this._startHealthCheck();
+      }
 
-    return { meetingId, status: 'starting' };
+      return { meetingId, status: 'pending' };
+    } catch (err) {
+      console.error(`❌ Failed to join meeting: ${err.message}`);
+      throw err;
+    }
   }
 
   /**
-   * Leave a meeting — stop and remove the worker container.
-   * @param {string} meetingId
+   * Stop and remove a worker container
    */
   async leaveMeeting(meetingId) {
-    const meeting = this.meetings.get(meetingId);
-    if (!meeting) throw new Error(`Meeting ${meetingId} not found`);
-
-    console.log(`🛑 Stopping worker ${meetingId}`);
-    if (meeting._admissionTimer) clearTimeout(meeting._admissionTimer);
-
-    try {
-      const container = this.docker.getContainer(meeting.containerId);
-      await container.stop({ t: 10 }).catch(() => {}); // may already be stopped
-    } catch (e) {
-      console.warn(`⚠️ Error stopping container for ${meetingId}: ${e.message}`);
+    if (!this.meetings.has(meetingId)) {
+      throw new Error(`Meeting ${meetingId} not found`);
     }
 
-    this.meetings.delete(meetingId);
+    await this._destroyMeeting(meetingId, 'User requested');
     return { ok: true };
   }
 
-  /** List all active meetings */
-  async listMeetings() {
-    const list = [];
-    for (const m of this.meetings.values()) {
-      list.push({
-        meetingId: m.meetingId,
-        meetUrl: m.meetUrl,
-        botName: m.botName,
-        status: m.status,
-        startedAt: m.startedAt.toISOString(),
-        duration: Math.floor((Date.now() - m.startedAt.getTime()) / 1000),
-      });
-    }
-    return list;
-  }
-
-  /** Get detailed status for one meeting */
-  async getMeetingStatus(meetingId) {
-    const m = this.meetings.get(meetingId);
-    if (!m) return null;
-
-    let containerState = 'unknown';
-    try {
-      const info = await this.docker.getContainer(m.containerId).inspect();
-      containerState = info.State?.Status || 'unknown';
-    } catch { /* container may be gone */ }
-
-    return {
-      meetingId: m.meetingId,
-      meetUrl: m.meetUrl,
-      botName: m.botName,
-      status: m.status,
-      containerState,
-      sessionKey: m.sessionKey,
-      startedAt: m.startedAt.toISOString(),
-      duration: Math.floor((Date.now() - m.startedAt.getTime()) / 1000),
-    };
-  }
-
-  /** Mark a meeting as admitted (call from external signal if available) */
+  /**
+   * Mark a meeting as admitted (called by Gateway when worker connects)
+   */
   markAdmitted(meetingId) {
-    const m = this.meetings.get(meetingId);
-    if (m) {
-      m.status = 'admitted';
-      if (m._admissionTimer) { clearTimeout(m._admissionTimer); m._admissionTimer = null; }
+    const meeting = this.meetings.get(meetingId);
+    if (meeting) {
+      meeting.status = 'admitted';
+      // Clear admission timeout
+      const timer = this.admissionTimers.get(meetingId);
+      if (timer) {
+        clearTimeout(timer);
+        this.admissionTimers.delete(meetingId);
+      }
       console.log(`✅ Meeting ${meetingId} admitted`);
     }
   }
 
-  // ─── Internal ───────────────────────────────────────────────────────────
-
-  /** Admission timeout — destroy worker if not admitted within 5 min */
-  async _admissionTimeout(meetingId) {
-    const m = this.meetings.get(meetingId);
-    if (!m || m.status === 'admitted') return;
-
-    console.log(`⏰ Admission timeout for ${meetingId}, destroying worker`);
-    try { await this.leaveMeeting(meetingId); } catch (e) {
-      console.error(`Error cleaning up timed-out meeting ${meetingId}: ${e.message}`);
+  /**
+   * Update meeting status (called by worker via gateway)
+   */
+  updateMeetingStatus(meetingId, statusUpdate) {
+    const meeting = this.meetings.get(meetingId);
+    if (meeting) {
+      meeting.status = statusUpdate.status || meeting.status;
+      if (statusUpdate.participants !== undefined) meeting.participants = statusUpdate.participants;
+      if (statusUpdate.transcriptCount !== undefined) meeting.transcriptCount = statusUpdate.transcriptCount;
     }
   }
 
-  /** Poll container status, detect crashes */
-  async _healthCheck() {
-    for (const [meetingId, m] of this.meetings) {
-      try {
-        const info = await this.docker.getContainer(m.containerId).inspect();
-        const state = info.State?.Status;
-
-        if (state === 'running') {
-          if (m.status === 'starting') m.status = 'running';
-        } else if (state === 'exited' || !state) {
-          console.log(`💀 Worker ${meetingId} exited (state=${state})`);
-          if (m._admissionTimer) clearTimeout(m._admissionTimer);
-          this.meetings.delete(meetingId);
-        }
-      } catch (e) {
-        // Container gone (auto-removed)
-        console.log(`💀 Worker ${meetingId} disappeared: ${e.message}`);
-        if (m._admissionTimer) clearTimeout(m._admissionTimer);
-        this.meetings.delete(meetingId);
-      }
-    }
-  }
-
-  /** On startup: find and remove any leftover meet-worker containers */
-  async _cleanupOrphans() {
-    try {
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: [`${LABEL_ROLE}=${ROLE_VALUE}`] },
+  /**
+   * List all active meetings
+   */
+  listMeetings() {
+    const result = [];
+    for (const [meetingId, meeting] of this.meetings.entries()) {
+      const now = Date.now();
+      const duration = now - meeting.startedAt;
+      result.push({
+        meetingId,
+        meetUrl: meeting.meetUrl,
+        botName: meeting.botName,
+        status: meeting.status,
+        duration: Math.floor(duration / 1000), // seconds
+        startedAt: new Date(meeting.startedAt).toISOString(),
       });
+    }
+    return result;
+  }
 
-      if (containers.length === 0) return;
-      console.log(`🧹 Cleaning up ${containers.length} orphan meet-worker container(s)`);
+  /**
+   * Get status of a specific meeting
+   */
+  getMeetingStatus(meetingId) {
+    if (!this.meetings.has(meetingId)) {
+      return null;
+    }
 
-      for (const c of containers) {
+    const meeting = this.meetings.get(meetingId);
+    const now = Date.now();
+    const duration = now - meeting.startedAt;
+
+    return {
+      meetingId,
+      meetUrl: meeting.meetUrl,
+      botName: meeting.botName,
+      status: meeting.status,
+      duration: Math.floor(duration / 1000),
+      startedAt: new Date(meeting.startedAt).toISOString(),
+      participants: meeting.participants,
+      transcriptCount: meeting.transcriptCount,
+      containerName: meeting.containerName,
+    };
+  }
+
+  /**
+   * Get orchestrator status
+   */
+  getStatus() {
+    const activeMeetings = Array.from(this.meetings.values()).filter(m =>
+      m.status === 'pending' || m.status === 'admitted' || m.status === 'running'
+    );
+
+    return {
+      activeMeetings: activeMeetings.length,
+      maxMeetings: this.maxMeetings,
+      meetings: this.listMeetings(),
+    };
+  }
+
+  /**
+   * Health check: poll container status every 30s, detect crashes
+   */
+  _startHealthCheck() {
+    this.healthCheckInterval = setInterval(async () => {
+      for (const [meetingId, meeting] of this.meetings.entries()) {
         try {
-          const container = this.docker.getContainer(c.Id);
-          if (c.State === 'running') await container.stop({ t: 5 }).catch(() => {});
-          await container.remove({ force: true }).catch(() => {});
-          console.log(`  ✓ Removed ${c.Names?.[0] || c.Id.substring(0, 12)}`);
-        } catch (e) {
-          console.warn(`  ✗ Failed to remove ${c.Id.substring(0, 12)}: ${e.message}`);
+          const container = this.docker.getContainer(meeting.containerId);
+          const info = await container.inspect();
+
+          // If container exited, clean up the meeting
+          if (!info.State.Running) {
+            const exitCode = info.State.ExitCode;
+            const reason = `Container exited with code ${exitCode}`;
+            console.warn(`⚠️ Meeting ${meetingId} container exited: ${reason}`);
+            await this._destroyMeeting(meetingId, reason);
+          }
+        } catch (err) {
+          // Container not found or other error
+          console.error(`⚠️ Health check failed for meeting ${meetingId}: ${err.message}`);
+          await this._destroyMeeting(meetingId, `Health check error: ${err.message}`);
         }
       }
-    } catch (e) {
-      console.warn(`⚠️ Orphan cleanup failed (Docker socket available?): ${e.message}`);
+
+      // Stop health check if no more meetings
+      if (this.meetings.size === 0 && this.healthCheckInterval) {
+        clearInterval(this.healthCheckInterval);
+        this.healthCheckInterval = null;
+        console.log(`🧹 Health check stopped (no active meetings)`);
+      }
+    }, 30 * 1000); // Every 30 seconds
+  }
+
+  /**
+   * Destroy a meeting: stop container, clean up state
+   */
+  async _destroyMeeting(meetingId, reason = 'Unknown') {
+    const meeting = this.meetings.get(meetingId);
+    if (!meeting) return;
+
+    // Clear admission timer if still pending
+    const timer = this.admissionTimers.get(meetingId);
+    if (timer) {
+      clearTimeout(timer);
+      this.admissionTimers.delete(meetingId);
     }
+
+    try {
+      const container = this.docker.getContainer(meeting.containerId);
+      try {
+        await container.stop({ t: 10 });
+      } catch (err) {
+        // Already stopped
+      }
+      try {
+        await container.remove();
+      } catch (err) {
+        // May fail if auto-remove is enabled
+      }
+    } catch (err) {
+      console.error(`⚠️ Failed to destroy container for meeting ${meetingId}: ${err.message}`);
+    }
+
+    this.meetings.delete(meetingId);
+    console.log(`🛑 Meeting ${meetingId} destroyed: ${reason}`);
+  }
+
+  /**
+   * Shutdown: stop all containers and health check
+   */
+  async shutdown() {
+    console.log(`🛑 MeetOrchestrator shutting down...`);
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+
+    const meetingIds = Array.from(this.meetings.keys());
+    for (const meetingId of meetingIds) {
+      await this._destroyMeeting(meetingId, 'Orchestrator shutdown');
+    }
+
+    console.log(`✅ MeetOrchestrator shutdown complete`);
   }
 }
 
-module.exports = { MeetOrchestrator };
+module.exports = MeetOrchestrator;
