@@ -127,11 +127,8 @@ class MeetOrchestrator {
 
       console.log(`🎬 Started worker for meeting ${meetingId}: ${meetUrl}`);
 
-      // Set admission timeout (5 min)
-      const admissionTimer = setTimeout(() => {
-        this._destroyMeeting(meetingId, 'Admission timeout');
-      }, 10 * 60 * 1000); // 10 min admission timeout
-      this.admissionTimers.set(meetingId, admissionTimer);
+      // No admission timeout — container health check handles cleanup
+      // Meet-bot auto-leaves after 5min alone, container exits, health check removes it
 
       // Start health check if not already running
       if (!this.healthCheckInterval) {
