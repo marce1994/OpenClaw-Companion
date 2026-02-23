@@ -92,7 +92,7 @@ class MeetOrchestrator {
         Hostname: containerName,
         HostConfig: {
           NetworkMode: 'host',
-          AutoRemove: true,
+          AutoRemove: false,
         },
         Labels: {
           'openclaw.companion.meeting': meetingId,
@@ -105,7 +105,7 @@ class MeetOrchestrator {
           `GATEWAY_TOKEN=${gatewayToken}`,
           `GW_SESSION_KEY=${sessionKey}`,
           `WHISPER_URL=http://127.0.0.1:9000`,
-          `KOKORO_URL=http://127.0.0.1:8880`,
+          `KOKORO_URL=http://127.0.0.1:5004`,
           `HAIKU_MODEL=anthropic/claude-haiku-4-5`,
         ],
       });
@@ -130,7 +130,7 @@ class MeetOrchestrator {
       // Set admission timeout (5 min)
       const admissionTimer = setTimeout(() => {
         this._destroyMeeting(meetingId, 'Admission timeout');
-      }, 5 * 60 * 1000);
+      }, 10 * 60 * 1000); // 10 min admission timeout
       this.admissionTimers.set(meetingId, admissionTimer);
 
       // Start health check if not already running
