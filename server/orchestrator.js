@@ -37,8 +37,8 @@ class MeetOrchestrator {
   }
 
   /**
-   * Cleanup orphaned meet-worker containers on startup
-   * Finds containers with label openclaw.companion.role=meet-worker and removes them
+   * Re-adopt or cleanup orphaned meet-worker containers on startup
+   * Running workers are re-adopted into the meetings map; exited ones are removed
    */
   async cleanupOrphans() {
     try {
@@ -52,14 +52,44 @@ class MeetOrchestrator {
       for (const containerInfo of containers) {
         const container = this.docker.getContainer(containerInfo.Id);
         try {
-          if (containerInfo.State !== 'exited') {
-            console.log(`🧹 Stopping orphaned meet-worker: ${containerInfo.Names[0] || containerInfo.Id.slice(0, 12)}`);
-            await container.stop({ t: 10 });
+          if (containerInfo.State === 'running') {
+            // Re-adopt running worker
+            const meetingId = containerInfo.Labels['openclaw.companion.meeting'] || containerInfo.Id.slice(0, 12);
+            const name = containerInfo.Names[0]?.replace(/^\//, '') || containerInfo.Id.slice(0, 12);
+            console.log(`♻️ Re-adopting running meet-worker: ${name} (meeting ${meetingId})`);
+
+            // Try to get status from worker
+            let meetUrl = '', workerState = 'in-meeting', transcriptCount = 0;
+            try {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 3000);
+              const res = await fetch('http://127.0.0.1:3300/status', { signal: controller.signal });
+              clearTimeout(timeout);
+              const status = await res.json();
+              meetUrl = status.meetLink || '';
+              workerState = status.state || 'in-meeting';
+              transcriptCount = status.transcriptEntries || 0;
+            } catch (_) { /* worker not responding, assume in-meeting */ }
+
+            this.meetings.set(meetingId, {
+              containerId: containerInfo.Id,
+              startedAt: new Date(containerInfo.Created * 1000).getTime(),
+              status: workerState,
+              meetUrl,
+              botName: 'Jarvis',
+              participants: 0,
+              transcriptCount,
+              containerName: name,
+            });
+
+            if (!this.healthCheckInterval) this._startHealthCheck();
+          } else {
+            // Remove exited containers
+            console.log(`🧹 Removing exited meet-worker: ${containerInfo.Names[0] || containerInfo.Id.slice(0, 12)}`);
+            await container.remove();
           }
-          console.log(`🧹 Removing orphaned meet-worker: ${containerInfo.Names[0] || containerInfo.Id.slice(0, 12)}`);
-          await container.remove();
         } catch (err) {
-          console.error(`⚠️ Failed to remove orphaned container ${containerInfo.Id.slice(0, 12)}: ${err.message}`);
+          console.error(`⚠️ Failed to handle orphaned container ${containerInfo.Id.slice(0, 12)}: ${err.message}`);
         }
       }
     } catch (err) {
@@ -87,7 +117,7 @@ class MeetOrchestrator {
     try {
       // Create container
       const container = await this.docker.createContainer({
-        Image: 'meet-bot:v6',
+        Image: 'meet-bot:v7',
         name: containerName,
         Hostname: containerName,
         HostConfig: {
@@ -259,6 +289,22 @@ class MeetOrchestrator {
             const reason = `Container exited with code ${exitCode}`;
             console.warn(`⚠️ Meeting ${meetingId} container exited: ${reason}`);
             await this._destroyMeeting(meetingId, reason);
+          } else {
+            // Poll worker status via HTTP
+            try {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 5000);
+              const res = await fetch(`http://127.0.0.1:3300/status`, { signal: controller.signal });
+              clearTimeout(timeout);
+              const workerStatus = await res.json();
+              if (workerStatus.state && workerStatus.state !== meeting.status) {
+                console.log(`📊 Meeting ${meetingId} status: ${meeting.status} → ${workerStatus.state}`);
+                meeting.status = workerStatus.state;
+              }
+              if (workerStatus.transcriptEntries !== undefined) {
+                meeting.transcriptCount = workerStatus.transcriptEntries;
+              }
+            } catch (_) { /* worker not ready yet, ignore */ }
           }
         } catch (err) {
           // Container not found or other error

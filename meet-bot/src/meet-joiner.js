@@ -16,13 +16,8 @@ class MeetJoiner extends EventEmitter {
     this.meetLink = '';
     this.botName = config.botName;
     this.watchdogInterval = null;
-    // Active speaker detection
-    this.activeSpeakers = [];       // Current speakers (from Meet UI)
-    this.speakerPollInterval = null;
-    // Auto-leave when alone
-    this.aloneTimer = null;
-    this.aloneSinceMs = 0;
-    this.autoLeaveMs = parseInt(process.env.AUTO_LEAVE_ALONE_MS || '300000', 10); // 5 min
+    this._aloneStartedAt = null;
+    this._aloneTimeoutMs = 2 * 60 * 1000; // 2 minutes alone → auto-leave
   }
 
   getState() {
@@ -57,7 +52,6 @@ class MeetJoiner extends EventEmitter {
       await this._navigateToMeet();
       await this._joinMeeting();
       this._startWatchdog();
-      this._startSpeakerPoll();
     } catch (err) {
       console.error(LOG, 'Join failed:', err.message);
       this._setState('error');
@@ -69,7 +63,6 @@ class MeetJoiner extends EventEmitter {
   async leave() {
     this._setState('leaving');
     this._stopWatchdog();
-    this._stopSpeakerPoll();
 
     try {
       if (this.page) {
@@ -115,7 +108,6 @@ class MeetJoiner extends EventEmitter {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
-      '--disable-frame-rate-limit',
     ];
 
     // If Live2D is enabled, don't use fake video — we'll provide our own
@@ -267,33 +259,6 @@ class MeetJoiner extends EventEmitter {
 
     // Enter bot name if there's a name input (guest mode)
     await this._trySetName();
-
-    // Ensure mic is unmuted before joining (we inject audio via PulseAudio virtual mic)
-    await this._sleep(1000);
-    let unmuted = await this._tryClick('[aria-label*="microphone" i][data-is-muted="true"]', 'Unmute mic');
-    if (!unmuted) {
-      // Fallback: try via page.evaluate for dynamic DOM
-      try {
-        unmuted = await this.page.evaluate(() => {
-          // Try data-is-muted attribute
-          const mutedBtn = document.querySelector('[data-is-muted="true"][aria-label*="microphone" i]');
-          if (mutedBtn) { mutedBtn.click(); return true; }
-          // Try any muted mic button
-          const btns = document.querySelectorAll('button[aria-label*="microphone" i], [role="button"][aria-label*="microphone" i]');
-          for (const btn of btns) {
-            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-            if (label.includes('unmute') || label.includes('activar') || label.includes('turn on')) {
-              btn.click(); return true;
-            }
-          }
-          return false;
-        });
-        if (unmuted) console.log(LOG, 'Unmuted mic via evaluate fallback');
-      } catch (e) { /* ignore */ }
-    }
-    if (!unmuted) {
-      console.log(LOG, 'Mic already unmuted or toggle not found');
-    }
 
     // Click "Ask to join" or "Join now"
     await this._sleep(2000);
@@ -530,113 +495,6 @@ class MeetJoiner extends EventEmitter {
     throw new Error('Admission timeout (5 minutes)');
   }
 
-  /**
-   * Poll Meet UI for active speakers (blue border / speaking indicator).
-   * Emits 'active-speakers' with array of {name, participantId}.
-   * Also tracks participant count for auto-leave.
-   */
-  _startSpeakerPoll() {
-    this.speakerPollInterval = setInterval(async () => {
-      if (this.state !== 'in-meeting' || !this.page) return;
-      try {
-        const result = await this.page.evaluate(() => {
-          const speakers = [];
-          const allParticipants = [];
-
-          // Meet renders participant tiles. Active speakers have animated borders.
-          // Method 1: data-participant-id tiles with speaking indicator
-          document.querySelectorAll('[data-participant-id]').forEach(el => {
-            // Get participant name from aria-label or nested element
-            const nameEl = el.querySelector('[data-self-name]') || el.querySelector('[class*="ZjFb7c"]');
-            const name = nameEl?.textContent?.trim() ||
-                         el.getAttribute('aria-label')?.replace(/ \(.*\)/, '')?.trim() ||
-                         'Unknown';
-
-            allParticipants.push(name);
-
-            // Check for speaking indicator:
-            // 1. Blue/green animated border (CSS animation on border)
-            // 2. SVG speaking wave icon
-            // 3. Class containing "speaking" or "active"
-            const style = window.getComputedStyle(el);
-            const hasBorderAnim = style.animationName !== 'none' && style.animationName !== '';
-            const hasSpeakingClass = el.className.includes('speak') || el.className.includes('Spoke');
-            // Check child elements for speaking wave SVG
-            const hasSpeakingIcon = !!el.querySelector('svg[class*="speak"], [class*="Qevneb"]');
-            // Check border color (active speaker gets colored border)
-            const borderColor = style.borderColor || style.outlineColor || '';
-            const hasActiveBorder = borderColor.includes('rgb(26, 115, 232)') || // Google blue
-                                    borderColor.includes('rgb(66, 133, 244)') ||
-                                    borderColor.includes('rgb(0, 200,') ||       // green variant
-                                    el.querySelector('[style*="border"][style*="rgb(26"]');
-
-            if (hasBorderAnim || hasSpeakingClass || hasSpeakingIcon || hasActiveBorder) {
-              speakers.push({ name, participantId: el.getAttribute('data-participant-id') });
-            }
-          });
-
-          // Method 2: Bottom bar speaking indicators (shows name of current speaker)
-          // Meet sometimes shows "X is presenting" or speaker name in bottom bar
-          const speakerBar = document.querySelector('[class*="ojJM9c"], [class*="GSQgnf"]');
-          if (speakerBar?.textContent) {
-            const barText = speakerBar.textContent.trim();
-            if (barText && !speakers.some(s => barText.includes(s.name))) {
-              speakers.push({ name: barText.replace(' is presenting', '').trim(), participantId: null });
-            }
-          }
-
-          return { speakers, participantCount: allParticipants.length };
-        });
-
-        // Emit active speakers if changed
-        const newNames = result.speakers.map(s => s.name).sort().join(',');
-        const oldNames = this.activeSpeakers.map(s => s.name).sort().join(',');
-        if (newNames !== oldNames) {
-          this.activeSpeakers = result.speakers;
-          if (result.speakers.length > 0) {
-            this.emit('active-speakers', result.speakers);
-          }
-        }
-
-        // Auto-leave when alone (only bot in meeting)
-        // participantCount includes the bot itself, so <= 1 means alone
-        if (result.participantCount <= 1) {
-          if (!this.aloneSinceMs) {
-            this.aloneSinceMs = Date.now();
-            console.log(LOG, 'Alone in meeting, starting auto-leave timer (' + (this.autoLeaveMs/1000) + 's)');
-          } else if (Date.now() - this.aloneSinceMs >= this.autoLeaveMs) {
-            console.log(LOG, 'Alone for ' + (this.autoLeaveMs/1000) + 's, auto-leaving');
-            this._stopSpeakerPoll();
-            this._stopWatchdog();
-            this.emit('auto-leave');
-            this.leave().catch(e => console.error(LOG, 'Auto-leave error:', e.message));
-          }
-        } else {
-          if (this.aloneSinceMs) {
-            console.log(LOG, 'No longer alone (' + result.participantCount + ' participants)');
-          }
-          this.aloneSinceMs = 0;
-        }
-      } catch (e) {
-        // Page might be navigating
-      }
-    }, 1000); // Poll every 1s
-  }
-
-  _stopSpeakerPoll() {
-    if (this.speakerPollInterval) {
-      clearInterval(this.speakerPollInterval);
-      this.speakerPollInterval = null;
-    }
-    this.activeSpeakers = [];
-    this.aloneSinceMs = 0;
-  }
-
-  /** Get current active speakers (called by transcriber for attribution) */
-  getActiveSpeakers() {
-    return this.activeSpeakers;
-  }
-
   _startWatchdog() {
     this.watchdogInterval = setInterval(async () => {
       if (this.state !== 'in-meeting') return;
@@ -664,6 +522,41 @@ class MeetJoiner extends EventEmitter {
           this._stopWatchdog();
           this._setState('idle');
           this.emit('meeting-ended');
+          return;
+        }
+
+        // Check if alone in meeting (≤1 participant = just the bot)
+        const participantCount = await this.page.evaluate(() => {
+          // Method 1: participant count badge on people button
+          const badges = document.querySelectorAll('[data-participant-count], [aria-label*="participant" i], [aria-label*="persona" i]');
+          for (const b of badges) {
+            const match = (b.getAttribute('aria-label') || b.textContent || '').match(/(\d+)/);
+            if (match) return parseInt(match[1]);
+          }
+          // Method 2: count video tiles (each participant has one)
+          const tiles = document.querySelectorAll('[data-participant-id], [data-requested-participant-id]');
+          if (tiles.length > 0) return tiles.length;
+          // Method 3: count visible name labels in the grid
+          const names = document.querySelectorAll('[data-self-name], [data-participant-id]');
+          return names.length || -1; // -1 = couldn't detect
+        }).catch(() => -1);
+
+        if (participantCount >= 0 && participantCount <= 1) {
+          if (!this._aloneStartedAt) {
+            this._aloneStartedAt = Date.now();
+            console.log(LOG, `Alone in meeting (${participantCount} participants), starting ${this._aloneTimeoutMs / 1000}s timer`);
+          } else if (Date.now() - this._aloneStartedAt > this._aloneTimeoutMs) {
+            console.log(LOG, `Alone for >${this._aloneTimeoutMs / 1000}s, auto-leaving`);
+            this._stopWatchdog();
+            this._setState('idle');
+            this.emit('meeting-ended', { reason: 'alone-timeout' });
+            return;
+          }
+        } else if (participantCount > 1) {
+          if (this._aloneStartedAt) {
+            console.log(LOG, `No longer alone (${participantCount} participants)`);
+            this._aloneStartedAt = null;
+          }
         }
       } catch (err) {
         // Page might be closed

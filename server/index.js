@@ -1650,387 +1650,173 @@ function generateDashboardHtml(orchestrator, wsClientsCount = 0, speakerCount = 
   const upSeconds = uptime % 60;
   const memUsage = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
   const maxHeap = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
+  const memPct = Math.round((memUsage / maxHeap) * 100);
   
-  // System overview cards
-  const gateWayStatus = gwConnected ? '🟢 Connected' : '🔴 Offline';
-  const ttsStatus = TTS_ENGINE === 'kokoro' ? '🟢 Kokoro' : (TTS_ENGINE === 'xtts' ? '🟢 XTTS' : '🟢 Edge');
+  const gateWayStatus = gwConnected ? 'ONLINE' : 'OFFLINE';
+  const gwClass = gwConnected ? 'online' : 'offline';
+  const ttsName = TTS_ENGINE === 'kokoro' ? 'KOKORO' : (TTS_ENGINE === 'xtts' ? 'XTTS' : 'EDGE');
   
-  const meetingsHtml = status.meetings.map(m => `
-    <div class="meeting-card">
-      <div class="meeting-title">${m.botName}</div>
-      <div class="meeting-url">${m.meetUrl}</div>
-      <div class="meeting-status ${m.status}">${m.status}</div>
-      <div class="meeting-info">
-        <span>📅 ${new Date(m.startedAt).toLocaleTimeString()}</span>
-        <span>⏱️ ${m.duration}s</span>
+  const meetingsHtml = status.meetings.map(m => {
+    const dur = m.duration || 0;
+    const durMin = Math.floor(dur / 60);
+    const durSec = dur % 60;
+    const statusClass = m.status === 'in-meeting' ? 'active' : m.status === 'pending' ? 'pending' : 'idle';
+    const transcripts = m.transcriptCount || 0;
+    return `
+    <div class="meeting-card ${statusClass}">
+      <div class="mc-header">
+        <span class="mc-name">${m.botName}</span>
+        <span class="mc-badge ${statusClass}">${m.status.toUpperCase()}</span>
       </div>
-    </div>
-  `).join('');
-
-  // Activity log HTML
-  const activityHtml = activityLog.slice().reverse().map((evt) => {
-    let icon = 'ℹ️';
-    if (evt.level === 'error') icon = '❌';
-    else if (evt.level === 'warning') icon = '⚠️';
-    else if (evt.type === 'connected') icon = '🟢';
-    else if (evt.type === 'disconnected') icon = '🔴';
-    else if (evt.type === 'meeting_join') icon = '🚪';
-    else if (evt.type === 'meeting_leave') icon = '👋';
-    
-    const time = new Date(evt.timestamp);
-    const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
-    
-    return `<div class="activity-item level-${evt.level}"><span class="activity-icon">${icon}</span><span class="activity-time">${timeStr}</span> <span class="activity-msg">${evt.message}</span></div>`;
+      <div class="mc-url">${m.meetUrl}</div>
+      <div class="mc-stats">
+        <div class="mc-stat"><span class="mc-stat-val">${durMin}m ${durSec}s</span><span class="mc-stat-lbl">DURATION</span></div>
+        <div class="mc-stat"><span class="mc-stat-val">${transcripts}</span><span class="mc-stat-lbl">TRANSCRIPTS</span></div>
+        <div class="mc-stat"><span class="mc-stat-val">${new Date(m.startedAt).toLocaleTimeString()}</span><span class="mc-stat-lbl">STARTED</span></div>
+      </div>
+    </div>`;
   }).join('');
 
-  const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <title>OpenClaw Companion — Monitoring Dashboard</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="refresh" content="15">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      padding: 20px;
-      line-height: 1.5;
-    }
-    .container {
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-    header {
-      background: linear-gradient(135deg, #06b6d4, #ec4899);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-bottom: 30px;
-      padding-bottom: 15px;
-      border-bottom: 2px solid #334155;
-    }
-    h1 {
-      font-size: 2.5em;
-      margin-bottom: 5px;
-    }
-    .subtitle {
-      color: #94a3b8;
-      font-size: 0.95em;
-    }
-    .grid-2 {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 15px;
-      margin-bottom: 30px;
-    }
-    .stat-card {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 20px;
-      display: flex;
-      align-items: center;
-      gap: 15px;
-    }
-    .stat-icon {
-      font-size: 2.5em;
-      min-width: 60px;
-      text-align: center;
-    }
-    .stat-content {
-      flex: 1;
-    }
-    .stat-label {
-      font-size: 0.85em;
-      color: #94a3b8;
-      margin-bottom: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .stat-value {
-      font-size: 1.8em;
-      font-weight: bold;
-      color: #06b6d4;
-    }
-    .status-healthy { color: #10b981; }
-    .status-warning { color: #f59e0b; }
-    .status-error { color: #ef4444; }
-    .status-indicator {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 6px;
-    }
-    .indicator-green { background: #10b981; animation: pulse-green 2s infinite; }
-    .indicator-yellow { background: #f59e0b; animation: pulse-yellow 2s infinite; }
-    .indicator-red { background: #ef4444; animation: pulse-red 2s infinite; }
-    @keyframes pulse-green {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
-    }
-    @keyframes pulse-yellow {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
-    }
-    @keyframes pulse-red {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
-    }
-    .section {
-      margin-bottom: 30px;
-    }
-    .section-title {
-      font-size: 1.3em;
-      margin-bottom: 15px;
-      color: #e2e8f0;
-      border-left: 4px solid #06b6d4;
-      padding-left: 12px;
-      font-weight: 600;
-    }
-    .meetings-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 15px;
-    }
-    .meeting-card {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 15px;
-      border-left: 4px solid #06b6d4;
-      transition: border-left-color 0.3s;
-    }
-    .meeting-card:hover {
-      border-left-color: #ec4899;
-    }
-    .meeting-title {
-      font-weight: 600;
-      margin-bottom: 5px;
-      color: #06b6d4;
-      font-size: 0.95em;
-    }
-    .meeting-url {
-      font-size: 0.8em;
-      color: #64748b;
-      margin-bottom: 8px;
-      word-break: break-all;
-      font-family: 'Monaco', monospace;
-    }
-    .meeting-status {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 4px;
-      font-size: 0.8em;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-    .meeting-status.pending { background: #f59e0b; color: #000; }
-    .meeting-status.admitted { background: #3b82f6; color: #fff; }
-    .meeting-status.running { background: #10b981; color: #fff; }
-    .meeting-status.ended { background: #6b7280; color: #fff; }
-    .meeting-info {
-      font-size: 0.8em;
-      color: #94a3b8;
-      display: flex;
-      gap: 12px;
-      margin-top: 10px;
-      flex-wrap: wrap;
-    }
-    .empty-state {
-      text-align: center;
-      padding: 40px 20px;
-      color: #64748b;
-      background: #1e293b;
-      border-radius: 8px;
-      border: 1px dashed #334155;
-    }
-    .service-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 15px;
-    }
-    .service-card {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 15px;
-    }
-    .service-name {
-      font-weight: 600;
-      color: #e2e8f0;
-      margin-bottom: 8px;
-      font-size: 0.95em;
-    }
-    .service-url {
-      font-size: 0.75em;
-      color: #64748b;
-      word-break: break-all;
-      font-family: 'Monaco', monospace;
-      margin-bottom: 8px;
-    }
-    .activity-log {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 15px;
-      font-size: 0.85em;
-      max-height: 300px;
-      overflow-y: auto;
-    }
-    .activity-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 0;
-      border-bottom: 1px solid #334155;
-      color: #94a3b8;
-    }
-    .activity-item:last-child {
-      border-bottom: none;
-    }
-    .activity-item.level-error {
-      color: #ef4444;
-    }
-    .activity-item.level-warning {
-      color: #f59e0b;
-    }
-    .activity-item.level-info {
-      color: #06b6d4;
-    }
-    .activity-icon {
-      min-width: 20px;
-      text-align: center;
-    }
-    .activity-time {
-      font-family: 'Monaco', monospace;
-      color: #64748b;
-      font-size: 0.75em;
-      min-width: 60px;
-    }
-    .activity-msg {
-      flex: 1;
-    }
-    .footer {
-      text-align: center;
-      margin-top: 40px;
-      padding-top: 20px;
-      border-top: 1px solid #334155;
-      color: #64748b;
-      font-size: 0.85em;
-    }
-    .refresh-note {
-      text-align: right;
-      color: #64748b;
-      font-size: 0.8em;
-      margin-bottom: 20px;
-    }
-    @media (max-width: 768px) {
-      .grid-2 { grid-template-columns: 1fr; }
-      .meetings-grid { grid-template-columns: 1fr; }
-      .service-grid { grid-template-columns: 1fr; }
-      h1 { font-size: 1.8em; }
-      .stat-card { flex-direction: column; text-align: center; }
-      .stat-icon { font-size: 2em; }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="refresh-note">🔄 Refreshing every 15 seconds</div>
-    
-    <header>
-      <h1>🎬 OpenClaw Companion</h1>
-      <div class="subtitle">Monitoring Dashboard • Real-time System Status</div>
-    </header>
+  const activityHtml = activityLog.slice().reverse().slice(0, 20).map((evt) => {
+    let icon = '●', cls = 'info';
+    if (evt.level === 'error') { icon = '✖'; cls = 'error'; }
+    else if (evt.level === 'warning') { icon = '▲'; cls = 'warn'; }
+    else if (evt.type === 'connected') { icon = '◉'; cls = 'ok'; }
+    else if (evt.type === 'disconnected') { icon = '◎'; cls = 'error'; }
+    else if (evt.type === 'meeting_join') { icon = '▶'; cls = 'ok'; }
+    else if (evt.type === 'meeting_leave') { icon = '■'; cls = 'warn'; }
+    const time = new Date(evt.timestamp);
+    const timeStr = `${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}:${time.getSeconds().toString().padStart(2, '0')}`;
+    return `<div class="log-line ${cls}"><span class="log-icon">${icon}</span><span class="log-time">${timeStr}</span><span class="log-msg">${evt.message}</span></div>`;
+  }).join('');
 
-    <section class="section">
-      <div class="section-title">📊 System Overview</div>
-      <div class="grid-2">
-        <div class="stat-card">
-          <div class="stat-icon">⏱️</div>
-          <div class="stat-content">
-            <div class="stat-label">Server Uptime</div>
-            <div class="stat-value">${upHours}h ${upMinutes}m ${upSeconds}s</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">💾</div>
-          <div class="stat-content">
-            <div class="stat-label">Memory Usage</div>
-            <div class="stat-value">${memUsage}/${maxHeap}MB</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">🔌</div>
-          <div class="stat-content">
-            <div class="stat-label">WebSocket Connections</div>
-            <div class="stat-value">${wsClientsCount}</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">🌐</div>
-          <div class="stat-content">
-            <div class="stat-label">Gateway WS</div>
-            <div class="stat-value"><span class="status-indicator ${gwConnected ? 'indicator-green' : 'indicator-red'}"></span>${gateWayStatus}</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">🔊</div>
-          <div class="stat-content">
-            <div class="stat-label">TTS Engine</div>
-            <div class="stat-value">${ttsStatus}</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">🎤</div>
-          <div class="stat-content">
-            <div class="stat-label">Speaker Profiles</div>
-            <div class="stat-value">${speakerCount}</div>
-          </div>
-        </div>
-      </div>
-    </section>
+  const html = `<!DOCTYPE html><html><head>
+<title>JARVIS — Command Center</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap');
+:root{--bg:#050a14;--panel:#0a1628;--border:#0d2847;--cyan:#00f0ff;--pink:#ff2d78;--green:#00ff88;--amber:#ffb800;--red:#ff3333;--text:#c0d8f0;--dim:#3a5070;--glow:0 0 20px rgba(0,240,255,0.15)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;padding:16px;min-height:100vh;
+  background-image:radial-gradient(ellipse at 20% 50%,rgba(0,240,255,0.03) 0%,transparent 50%),
+                    radial-gradient(ellipse at 80% 20%,rgba(255,45,120,0.03) 0%,transparent 50%)}
+.wrap{max-width:1400px;margin:0 auto}
 
-    <section class="section">
-      <div class="section-title">📞 Active Meetings</div>
-      ${meetingsHtml ? `<div class="meetings-grid">${meetingsHtml}</div>` : '<div class="empty-state">✨ No active meetings</div>'}
-    </section>
+/* Header */
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.hdr-left{display:flex;align-items:center;gap:16px}
+.hdr-logo{width:48px;height:48px;border:2px solid var(--cyan);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:var(--glow);animation:logoPulse 3s infinite}
+@keyframes logoPulse{0%,100%{box-shadow:0 0 10px rgba(0,240,255,0.2)}50%{box-shadow:0 0 25px rgba(0,240,255,0.4)}}
+.hdr h1{font-family:'Orbitron',monospace;font-size:1.6em;font-weight:900;background:linear-gradient(135deg,var(--cyan),var(--pink));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:3px}
+.hdr-sub{font-size:.8em;color:var(--dim);font-family:'Share Tech Mono',monospace;letter-spacing:1px}
+.hdr-right{text-align:right;font-family:'Share Tech Mono',monospace;font-size:.75em;color:var(--dim)}
+.hdr-right .pulse{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:6px;animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
-    <section class="section">
-      <div class="section-title">🖥️ GPU Services</div>
-      <div class="service-grid">
-        <div class="service-card">
-          <div class="service-name">Whisper ASR</div>
-          <div class="service-url">${WHISPER_URL}</div>
-          <div style="font-size: 0.8em; color: #94a3b8;">Speech-to-text service</div>
-        </div>
-        <div class="service-card">
-          <div class="service-name">Kokoro TTS</div>
-          <div class="service-url">${KOKORO_URL}</div>
-          <div style="font-size: 0.8em; color: #94a3b8;">Text-to-speech engine</div>
-        </div>
-      </div>
-    </section>
+/* Stat row */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px 16px;position:relative;overflow:hidden}
+.stat::before{content:'';position:absolute;top:0;left:0;width:3px;height:100%;background:var(--cyan)}
+.stat.gw::before{background:${gwConnected ? 'var(--green)' : 'var(--red)'}}
+.stat.tts::before{background:var(--pink)}
+.stat.spk::before{background:var(--amber)}
+.stat.mem::before{background:var(--green)}
+.stat-lbl{font-family:'Share Tech Mono',monospace;font-size:.65em;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px}
+.stat-val{font-family:'Orbitron',monospace;font-size:1.5em;font-weight:700;color:var(--cyan)}
+.stat.gw .stat-val{color:${gwConnected ? 'var(--green)' : 'var(--red)'}}
+.stat.tts .stat-val{color:var(--pink);font-size:1.2em}
+.stat.spk .stat-val{color:var(--amber)}
+.stat.mem .stat-val{color:var(--green)}
+.stat-bar{margin-top:6px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.stat-bar-fill{height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:2px;transition:width .5s}
 
-    <section class="section">
-      <div class="section-title">📋 Recent Activity</div>
-      <div class="activity-log">
-        ${activityHtml || '<div class="activity-item">✨ No activity yet</div>'}
-      </div>
-    </section>
+/* Sections */
+.sec{margin-bottom:24px}
+.sec-title{font-family:'Orbitron',monospace;font-size:.85em;letter-spacing:2px;text-transform:uppercase;color:var(--cyan);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.sec-title::before{content:'';width:12px;height:2px;background:var(--cyan)}
+.sec-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
 
-    <div class="footer">
-      <p>OpenClaw Voice Server v2.0 • Real-time Monitoring • Last updated: ${new Date().toLocaleTimeString()}</p>
+/* Meeting cards */
+.meetings{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.meeting-card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:16px;position:relative;transition:all .3s}
+.meeting-card.active{border-color:var(--green);box-shadow:0 0 15px rgba(0,255,136,0.1)}
+.meeting-card.pending{border-color:var(--amber);box-shadow:0 0 15px rgba(255,184,0,0.1)}
+.mc-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.mc-name{font-family:'Orbitron',monospace;font-size:.9em;font-weight:700;color:#fff}
+.mc-badge{font-family:'Share Tech Mono',monospace;font-size:.7em;padding:3px 10px;border-radius:3px;letter-spacing:1px}
+.mc-badge.active{background:rgba(0,255,136,0.15);color:var(--green);border:1px solid rgba(0,255,136,0.3)}
+.mc-badge.pending{background:rgba(255,184,0,0.15);color:var(--amber);border:1px solid rgba(255,184,0,0.3)}
+.mc-badge.idle{background:rgba(100,120,140,0.15);color:var(--dim);border:1px solid var(--border)}
+.mc-url{font-family:'Share Tech Mono',monospace;font-size:.7em;color:var(--dim);word-break:break-all;margin-bottom:10px}
+.mc-stats{display:flex;gap:16px}
+.mc-stat{display:flex;flex-direction:column}
+.mc-stat-val{font-family:'Orbitron',monospace;font-size:.95em;font-weight:600;color:var(--cyan)}
+.mc-stat-lbl{font-family:'Share Tech Mono',monospace;font-size:.55em;color:var(--dim);letter-spacing:1px;margin-top:2px}
+.empty{text-align:center;padding:30px;color:var(--dim);background:var(--panel);border:1px dashed var(--border);border-radius:6px;font-family:'Share Tech Mono',monospace;font-size:.85em}
+
+/* Services */
+.services{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.svc{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px;display:flex;align-items:center;gap:12px}
+.svc-dot{width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(0,255,136,0.4);flex-shrink:0}
+.svc-info{flex:1}
+.svc-name{font-family:'Orbitron',monospace;font-size:.8em;font-weight:600;color:#fff;letter-spacing:1px}
+.svc-url{font-family:'Share Tech Mono',monospace;font-size:.65em;color:var(--dim);word-break:break-all}
+
+/* Activity log */
+.log{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:280px;overflow-y:auto;font-family:'Share Tech Mono',monospace;font-size:.78em}
+.log-line{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(13,40,71,0.5)}
+.log-line:last-child{border:none}
+.log-icon{width:14px;text-align:center;font-size:.9em}
+.log-line.ok .log-icon{color:var(--green)}
+.log-line.error .log-icon{color:var(--red)}
+.log-line.warn .log-icon{color:var(--amber)}
+.log-line.info .log-icon{color:var(--cyan)}
+.log-time{color:var(--dim);font-size:.85em;min-width:60px}
+.log-msg{color:var(--text);flex:1}
+
+.footer{text-align:center;margin-top:30px;padding-top:16px;border-top:1px solid var(--border);font-family:'Share Tech Mono',monospace;font-size:.7em;color:var(--dim);letter-spacing:1px}
+
+@media(max-width:768px){.stats{grid-template-columns:1fr 1fr}.meetings{grid-template-columns:1fr}.hdr h1{font-size:1.2em}}
+</style></head><body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="hdr-logo">🐕</div>
+      <div><h1>JARVIS</h1><div class="hdr-sub">COMMAND CENTER v2.0</div></div>
+    </div>
+    <div class="hdr-right"><span class="pulse"></span>LIVE • AUTO-REFRESH 10s<br>${new Date().toLocaleTimeString()} UTC</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-lbl">Uptime</div><div class="stat-val">${upHours}h ${upMinutes}m</div></div>
+    <div class="stat mem"><div class="stat-lbl">Memory</div><div class="stat-val">${memUsage}MB</div><div class="stat-bar"><div class="stat-bar-fill" style="width:${memPct}%"></div></div></div>
+    <div class="stat gw"><div class="stat-lbl">Gateway</div><div class="stat-val">${gateWayStatus}</div></div>
+    <div class="stat tts"><div class="stat-lbl">TTS Engine</div><div class="stat-val">${ttsName}</div></div>
+    <div class="stat spk"><div class="stat-lbl">Speakers</div><div class="stat-val">${speakerCount}</div></div>
+    <div class="stat"><div class="stat-lbl">WS Clients</div><div class="stat-val">${wsClientsCount}</div></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-title">ACTIVE MEETINGS</div>
+    ${meetingsHtml ? '<div class="meetings">' + meetingsHtml + '</div>' : '<div class="empty">NO ACTIVE MEETINGS</div>'}
+  </div>
+
+  <div class="sec">
+    <div class="sec-title">GPU SERVICES</div>
+    <div class="services">
+      <div class="svc"><div class="svc-dot"></div><div class="svc-info"><div class="svc-name">WHISPER ASR</div><div class="svc-url">${WHISPER_URL}</div></div></div>
+      <div class="svc"><div class="svc-dot"></div><div class="svc-info"><div class="svc-name">KOKORO TTS</div><div class="svc-url">${KOKORO_URL}</div></div></div>
     </div>
   </div>
-</body>
-</html>
-  `;
+
+  <div class="sec">
+    <div class="sec-title">ACTIVITY LOG</div>
+    <div class="log">${activityHtml || '<div class="log-line info"><span class="log-icon">●</span><span class="log-msg">Awaiting events...</span></div>'}</div>
+  </div>
+
+  <div class="footer">JARVIS COMMAND CENTER • OPENCLAW COMPANION • ${new Date().toISOString()}</div>
+</div></body></html>`;
   return html;
 }
 

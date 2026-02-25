@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><title>Jarvis Meet Dashboard</title>
+<meta http-equiv="refresh" content="10">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#e0e0e0;font-family:system-ui;padding:20px}
+h1{color:#0f3460;font-size:1.5em;margin-bottom:15px}
+.card{background:#16213e;border-radius:8px;padding:15px;margin-bottom:12px}
+.card h2{font-size:1.1em;color:#e94560;margin-bottom:8px}
+.status{display:inline-block;padding:4px 12px;border-radius:12px;font-size:0.85em;font-weight:bold}
+.status.in-meeting{background:#0f3460;color:#4ecca3}
+.status.idle{background:#333;color:#888}
+.status.error{background:#600;color:#f66}
+pre{background:#0a0a1a;padding:10px;border-radius:6px;overflow-x:auto;max-height:400px;overflow-y:auto;font-size:0.8em;margin-top:8px}
+.transcript{max-height:500px;overflow-y:auto}
+.t-entry{padding:4px 0;border-bottom:1px solid #1a1a2e}
+.t-speaker{color:#e94560;font-weight:bold}
+.t-time{color:#666;font-size:0.8em}
+.t-text{color:#ccc}
+#data{white-space:pre-wrap}
+</style>
+</head><body>
+<h1>🐕 Jarvis Meet Dashboard</h1>
+<div class="card"><h2>Status</h2><div id="status">Loading...</div></div>
+<div class="card"><h2>Transcript</h2><div id="transcript" class="transcript">Loading...</div></div>
+<script>
+async function refresh() {
+  try {
+    const s = await (await fetch('/status')).json();
+    const stateClass = s.state || 'idle';
+    document.getElementById('status').innerHTML = `
+      <span class="status ${stateClass}">${s.state}</span>
+      ${s.meetLink ? `<br>Meeting: <a href="${s.meetLink}" style="color:#4ecca3">${s.meetLink}</a>` : ''}
+      <br>Transcripts: ${s.transcriptEntries || 0}
+      ${s.capturing ? ' | 🎙️ Capturing' : ''}
+    `;
+  } catch(e) { document.getElementById('status').textContent = 'Error: ' + e.message; }
+  try {
+    const t = await (await fetch('/transcript')).json();
+    if (t.entries && t.entries.length) {
+      const html = t.entries.slice(-50).map(e => 
+        `<div class="t-entry"><span class="t-speaker">${e.speaker||'?'}</span> <span class="t-time">${e.timestamp||''}</span><br><span class="t-text">${e.text||''}</span></div>`
+      ).join('');
+      document.getElementById('transcript').innerHTML = html;
+      document.getElementById('transcript').scrollTop = 999999;
+    } else {
+      document.getElementById('transcript').textContent = '(no transcripts yet)';
+    }
+  } catch(e) { document.getElementById('transcript').textContent = 'Error: ' + e.message; }
+}
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body></html>

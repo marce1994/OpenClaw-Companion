@@ -283,7 +283,7 @@ const server = http.createServer(async (req, res) => {
   const method = req.method;
 
   // Serve static files from /public
-  if (method === 'GET' && (url.pathname.startsWith('/live2d') || url.pathname === '/live2d.html')) {
+  if (method === 'GET' && (url.pathname.startsWith('/live2d') || url.pathname === '/live2d.html' || url.pathname.startsWith('/dashboard'))) {
     const safePath = url.pathname.replace(/\.\./g, '');
     const filePath = pathModule.join(__dirname, '..', 'public', safePath);
 
