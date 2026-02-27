@@ -64,10 +64,10 @@ All configuration via environment variables:
 | `TTS_ENGINE` | `kokoro` | TTS engine: `kokoro` or `edge` |
 | `KOKORO_URL` | `http://127.0.0.1:5004` | Kokoro TTS endpoint |
 | `KOKORO_VOICE` | `em_alex` | Spanish TTS voice |
-| `KOKORO_VOICE_EN` | `af_heart` | English TTS voice |
+| `KOKORO_VOICE_EN` | `bm_george` | English TTS voice |
 | `TTS_VOICE` | `es-AR-TomasNeural` | Edge TTS fallback voice |
 | `DEFAULT_LANG` | `es` | Default language (`en` or `es`) |
-| `LIVE2D_MODEL` | `Mao` | Avatar model: `Mao`, `Hiyori`, `Rice` |
+| `LIVE2D_MODEL` | `wanko` | Avatar model: `wanko`, `Mao`, `Hiyori`, `Rice` |
 | `LIVE2D_ENABLED` | `true` | Show Live2D avatar as camera |
 | `GOOGLE_CALENDAR_ICS` | (empty) | Private ICS URL for calendar auto-join |
 | `CALENDAR_REFRESH_HOURS` | `6` | How often to refresh calendar |
@@ -157,8 +157,8 @@ When launched by the orchestrator (with `MEETING_URL` env var), the bot operates
 | Variable | Description |
 |----------|-------------|
 | `MEETING_URL` | Google Meet URL to auto-join on startup |
-| `MEETING_ID` | Meeting identifier for data directory |
-| `MEETING_DATA_DIR` | Host path for meeting data persistence |
+| `RECORD_AUDIO` | Enable audio chunk recording for post-meeting diarization |
+| `MEETINGS_DIR` | Container path for meeting data export (default: `/data/meetings`) |
 
 ## Recent Fixes
 

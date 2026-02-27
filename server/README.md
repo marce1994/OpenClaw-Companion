@@ -522,5 +522,36 @@ For issues and questions:
 ---
 
 **Created**: 2024  
-**Last Updated**: February 2024  
-**Version**: 1.0.0
+**Last Updated**: February 2026  
+**Version**: 2.0.0
+
+---
+
+## Post-Meeting Summary Pipeline
+
+The voice server orchestrator manages an automated post-meeting processing pipeline:
+
+### Flow
+1. **Meet bot exits** → orchestrator detects container death
+2. **Relevance check** → Gemini Flash evaluates if meeting is worth summarizing
+3. **WhisperX diarization** → ephemeral GPU container processes full audio with speaker attribution
+4. **Speaker mapping** → AI maps `SPEAKER_XX` labels to real names from participant list
+5. **Summary generation** → Gemini Flash creates structured meeting summary
+6. **Delivery** → Summary sent to Telegram + saved to memory files + indexed in Cognee knowledge graph
+
+### Configuration
+
+Copy `summary-config.example.json` to `summary-config.json` and fill in your credentials:
+
+```bash
+cp summary-config.example.json summary-config.json
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEETINGS_HOST_DIR` | `/tmp/meetings` | **Host** path for meeting data persistence (must be a real host path, not container path) |
+| `MEET_BOT_IMAGE` | `meet-bot:v8` | Docker image for meet bot workers |
+
+> ⚠️ `MEETINGS_HOST_DIR` must be a path on the Docker **host**, not inside a container. The orchestrator passes this to `docker run` as a bind mount.
