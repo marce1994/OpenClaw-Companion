@@ -1,0 +1,12 @@
+{
+  "openrouter_api_key": "sk-or-v1-your-key-here",
+  "telegram_bot_token": "your-telegram-bot-token",
+  "telegram_chat_id": "your-telegram-chat-id",
+  "cognee_url": "http://172.17.0.1:8000",
+  "cognee_user": "your-cognee-user",
+  "cognee_password": "your-cognee-password",
+  "whisperx_image": "whisperx-api:latest",
+  "meetings_host_dir": "/tmp/meetings",
+  "memory_host_dir": "/path/to/memory",
+  "hf_token": "hf_your-huggingface-token"
+}

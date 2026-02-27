@@ -144,6 +144,54 @@ Transcript:
 ${transcript}`;
   }
 
+  /**
+   * Export meeting data for post-meeting summary pipeline.
+   * Saves transcripts.json, participants.json, metadata.json to meetingsDir.
+   */
+  exportForSummary(participants = []) {
+    const meetId = this._extractMeetId(this.meetLink);
+    const exportDir = path.join(config.meetingsDir, meetId);
+    fs.mkdirSync(exportDir, { recursive: true });
+
+    // transcripts.json
+    fs.writeFileSync(
+      path.join(exportDir, 'transcripts.json'),
+      JSON.stringify(this.entries, null, 2),
+      'utf8'
+    );
+
+    // participants.json — normalize to [{name, joinedAt}]
+    const normalizedParticipants = (participants || []).map(p =>
+      typeof p === 'string' ? { name: p, joinedAt: null } : p
+    );
+    fs.writeFileSync(
+      path.join(exportDir, 'participants.json'),
+      JSON.stringify(normalizedParticipants, null, 2),
+      'utf8'
+    );
+
+    // metadata.json
+    const duration = this.meetingEnd && this.meetingStart
+      ? this._formatDuration(this.meetingEnd - this.meetingStart)
+      : 'unknown';
+    fs.writeFileSync(
+      path.join(exportDir, 'metadata.json'),
+      JSON.stringify({
+        meetLink: this.meetLink,
+        topic: this.topic,
+        date: (this.meetingStart || new Date()).toISOString().split('T')[0],
+        startedAt: this.meetingStart?.toISOString(),
+        endedAt: this.meetingEnd?.toISOString(),
+        duration,
+        entryCount: this.entries.length,
+      }, null, 2),
+      'utf8'
+    );
+
+    console.log(LOG, `Meeting data exported to ${exportDir}`);
+    return exportDir;
+  }
+
   _extractMeetId(link) {
     const match = link.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
     return match ? match[1] : 'meeting';

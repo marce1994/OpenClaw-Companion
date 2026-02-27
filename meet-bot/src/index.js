@@ -21,18 +21,43 @@ const meetJoiner = new MeetJoiner();
 const live2d = new Live2DCanvas();
 const calendar = new CalendarSync();
 
+// --- Silence-based auto-leave ---
+let lastTranscriptTime = Date.now();
+let silenceCheckInterval = null;
+
+function startSilenceWatch() {
+  lastTranscriptTime = Date.now();
+  const timeoutMs = config.silenceAutoLeaveMins * 60 * 1000;
+  silenceCheckInterval = setInterval(() => {
+    const silenceMs = Date.now() - lastTranscriptTime;
+    if (silenceMs >= timeoutMs) {
+      console.log(LOG, `No transcriptions for ${config.silenceAutoLeaveMins} min — auto-leaving`);
+      clearInterval(silenceCheckInterval);
+      silenceCheckInterval = null;
+      meetJoiner.leave().then(() => endMeetingWithSummary()).catch(e => console.error(LOG, e.message));
+    }
+  }, 30000); // Check every 30s
+}
+
+function stopSilenceWatch() {
+  if (silenceCheckInterval) {
+    clearInterval(silenceCheckInterval);
+    silenceCheckInterval = null;
+  }
+}
+
 // --- Wire up events ---
 transcriber.on('transcript', (entry) => {
+  lastTranscriptTime = Date.now(); // Reset silence timer
   // Prefer Meet UI speaker detection over Resemblyzer
-  const meetSpeakers = meetJoiner.getActiveSpeakers();
-  if (meetSpeakers.length === 1) {
-    // Single speaker — high confidence attribution
-    entry.speaker = meetSpeakers[0].name;
-  } else if (meetSpeakers.length > 1) {
-    // Multiple speakers — list them
-    entry.speaker = meetSpeakers.map(s => s.name).join('+');
-  }
-  // Fallback: keep Resemblyzer result (entry.speaker from transcriber)
+  try {
+    const meetSpeakers = meetJoiner.getActiveSpeakers ? meetJoiner.getActiveSpeakers() : [];
+    if (meetSpeakers.length === 1) {
+      entry.speaker = meetSpeakers[0].name;
+    } else if (meetSpeakers.length > 1) {
+      entry.speaker = meetSpeakers.map(s => s.name).join('+');
+    }
+  } catch (e) { /* fallback to Resemblyzer speaker */ }
   
   memory.addEntry(entry);
   if (config.live2dEnabled && live2d.active) {
@@ -68,6 +93,7 @@ meetJoiner.on('joined', async () => {
   audioPipeline.startCapture();
   transcriber.start();
   aiResponder.connect();
+  startSilenceWatch();
 
   // Inject Live2D renderer directly into Meet page (HD, 30fps+)
   if (config.live2dEnabled && meetJoiner.page) {
@@ -100,41 +126,35 @@ aiResponder.on('speaking-end', () => {
 });
 
 async function endMeetingWithSummary() {
+  stopSilenceWatch();
   await stopPipeline();
   calendar.onMeetingEnded();
   
-  // Get summary prompt BEFORE ending meeting (which resets entries)
-  // Pass bot name to include in summary context
-  const summaryPrompt = memory.getSummaryPrompt(config.botName);
+  // Export data for the summary-worker pipeline
+  let participants = [];
+  try {
+    participants = await meetJoiner.getParticipantNames();
+  } catch (e) { /* page may be gone */ }
+  const exportDir = memory.exportForSummary(participants);
+
+  // Move audio chunks into export dir
+  if (audioPipeline.recordingDir && fs.existsSync(audioPipeline.recordingDir)) {
+    const targetDir = pathModule.join(exportDir, 'audio-chunks');
+    try {
+      fs.renameSync(audioPipeline.recordingDir, targetDir);
+      console.log(LOG, `Audio chunks moved to ${targetDir}`);
+    } catch (e) {
+      console.log(LOG, `Audio move failed: ${e.message}`);
+    }
+  }
+
   const filePath = await memory.endMeeting();
   if (filePath) {
     console.log(LOG, `Transcript saved: ${filePath}`);
   }
-  
-  // Auto-generate and send summary to Telegram via Gateway
-  if (summaryPrompt && aiResponder.connected) {
-    console.log(LOG, 'Generating meeting summary...');
-    try {
-      const crypto = require('crypto');
-      const id = `meet-summary-${crypto.randomUUID().substring(0, 8)}`;
-      aiResponder._send({
-        type: 'req',
-        id,
-        method: 'chat.send',
-        params: {
-          sessionKey: config.gwSessionKey,
-          message: summaryPrompt,
-          idempotencyKey: crypto.randomUUID(),
-        },
-      });
-      console.log(LOG, 'Summary request sent to Gateway');
-    } catch (err) {
-      console.error(LOG, 'Failed to send summary:', err.message);
-    }
-    // Give time for the summary to be sent before disconnecting
-    await new Promise(r => setTimeout(r, 15000));
-    aiResponder.disconnect();
-  }
+
+  console.log(LOG, 'Meeting data exported — summary-worker will handle the rest');
+  // Don't generate summary here anymore — the orchestrator will launch summary-worker
 }
 
 meetJoiner.on('meeting-ended', async () => {
@@ -186,6 +206,11 @@ calendar.on('leave', async ({ event }) => {
 meetJoiner.on('left', async () => {
   console.log(LOG, 'Left meeting');
   await stopPipeline();
+  // If launched by orchestrator (MEETING_URL), exit so container dies and triggers summary-worker
+  if (process.env.MEETING_URL) {
+    console.log(LOG, 'Orchestrator mode — exiting container');
+    setTimeout(() => process.exit(0), 2000);
+  }
 });
 
 meetJoiner.on('error', (err) => {
@@ -193,81 +218,8 @@ meetJoiner.on('error', (err) => {
 });
 
 memory.on('meeting-ended', async (info) => {
-  console.log(LOG, `Meeting summary available: ${info.entryCount} entries, duration: ${Math.round(info.duration / 60000)}min`);
-
-  // Auto-generate and send summary via Gateway WS
-  if (info.entryCount > 0 && info.transcript) {
-    try {
-      console.log(LOG, 'Generating auto-summary via AI...');
-      const duration = Math.round(info.duration / 60000);
-      const summaryPrompt = `You are a meeting assistant. Summarize this meeting transcript concisely.\n`
-        + `Meeting: ${memory.meetLink || 'Unknown'}\n`
-        + `Bot Facilitator: ${config.botName}\n`
-        + `Duration: ${duration} minutes\n\n`
-        + `Include:\n`
-        + `- Key topics discussed\n- Decisions made\n- Action items (who does what)\n\n`
-        + `Transcript:\n${info.transcript.substring(0, 8000)}\n\n`
-        + `Reply with a clean markdown summary.`;
-
-      const WebSocket = require('ws');
-      const crypto = require('crypto');
-
-      // Use a temporary WS connection if AI responder is disconnected
-      const ws = new WebSocket(config.gatewayWsUrl, {
-        headers: { 'Origin': 'http://127.0.0.1:18789' },
-      });
-
-      ws.on('open', () => {
-        // Wait for challenge then auth
-      });
-
-      let authenticated = false;
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.type === 'event' && msg.event === 'connect.challenge') {
-            ws.send(JSON.stringify({
-              type: 'req', id: 'summary-auth',
-              method: 'connect',
-              params: {
-                client: { id: 'meet-bot-summary', displayName: 'Meet Bot Summary', mode: 'backend', version: '1.0.0', platform: 'node' },
-                role: 'operator', scopes: ['operator.admin'],
-                minProtocol: 3, maxProtocol: 3,
-                auth: { token: config.gatewayToken },
-              },
-            }));
-          } else if (msg.type === 'hello-ok' || (msg.type === 'res' && msg.ok && msg.payload?.type === 'hello-ok')) {
-            authenticated = true;
-            // Send summary request
-            ws.send(JSON.stringify({
-              type: 'req', id: 'summary-req',
-              method: 'chat.send',
-              params: {
-                sessionKey: `${config.gwSessionKey}-summary`,
-                message: summaryPrompt,
-                idempotencyKey: crypto.randomUUID(),
-              },
-            }));
-            console.log(LOG, 'Summary request sent to Gateway');
-          } else if (msg.type === 'event' && msg.event === 'agent') {
-            const p = msg.payload || {};
-            if (p.stream === 'assistant' && p.data?.text) {
-              console.log(LOG, `Meeting summary:\n${p.data.text.substring(0, 500)}...`);
-            }
-            if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-              // Done, close connection
-              setTimeout(() => ws.close(), 1000);
-            }
-          }
-        } catch (e) { /* ignore */ }
-      });
-
-      // Auto-close after 60s
-      setTimeout(() => { try { ws.close(); } catch(e) {} }, 60000);
-    } catch (err) {
-      console.error(LOG, 'Auto-summary error:', err.message);
-    }
-  }
+  console.log(LOG, `Meeting ended: ${info.entryCount} entries, duration: ${Math.round(info.duration / 60000)}min`);
+  // Summary is now handled by the external summary-worker pipeline
 });
 
 async function stopPipeline() {

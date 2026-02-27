@@ -150,6 +150,8 @@ curl http://localhost:3200/health
 | `kokoro-tts` | 5004 | Text-to-speech (GPU, ~330ms) | ✅ Yes (or use Edge TTS) |
 | `meet-bot` | 3300 | Google Meet bot with Live2D | Optional |
 | `diarizer` | 3202 | Speaker diarization (pyannote) | Optional |
+| `summary-worker` | — | Post-meeting summary generation (ephemeral) | Optional |
+| `whisperx` | 8088 | WhisperX diarized transcription (ephemeral GPU) | Optional |
 
 Enable optional services with Docker Compose profiles:
 
@@ -266,6 +268,8 @@ OpenClaw-Companion/
 │   ├── Dockerfile
 │   └── src/                  Meet joiner, audio pipeline, Live2D
 ├── diarizer/                 Speaker diarization service (Python)
+├── summary-worker/           Post-meeting summary pipeline (ephemeral)
+├── whisperx/                 WhisperX diarized transcription API (ephemeral GPU)
 ├── android/                  Android app (Kotlin + Live2D)
 ├── web/                      Web client (React + TypeScript + Vite)
 ├── docker-compose.yml        GPU services (default)
@@ -277,6 +281,17 @@ OpenClaw-Companion/
 ## ⚙️ Configuration
 
 All configuration is via environment variables in `.env`. See [`.env.example`](.env.example) for the full list with descriptions.
+
+### Summary Worker Configuration
+
+The summary worker (used for post-meeting processing) requires a config file. Copy the example and fill in your values:
+
+```bash
+cp server/summary-config.example.json server/summary-config.json
+# Edit with your API keys (OpenRouter, Telegram, HuggingFace)
+```
+
+> ⚠️ `server/summary-config.json` contains secrets and is excluded from git via `.gitignore`.
 
 Key variables:
 

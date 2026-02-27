@@ -144,6 +144,28 @@ The bot will:
 7. **Audio injection**: TTS audio is played into the `tts_output` sink via `paplay`. The `virtual_mic` (remap of `tts_output.monitor`) feeds Chrome as its microphone input.
 8. **Live2D**: After joining, PixiJS + pixi-live2d-display is injected into the Meet page. The Live2D canvas stream replaces the WebRTC video track, showing the animated avatar to other participants.
 
+## Orchestrator Mode
+
+When launched by the orchestrator (with `MEETING_URL` env var), the bot operates in ephemeral container mode:
+
+- Auto-joins the meeting specified in `MEETING_URL` on startup
+- Exits with `process.exit(0)` after leaving the meeting, so the container dies and triggers the summary worker
+- The orchestrator monitors container exit to start post-meeting processing
+
+### Additional Environment Variables (Orchestrator Mode)
+
+| Variable | Description |
+|----------|-------------|
+| `MEETING_URL` | Google Meet URL to auto-join on startup |
+| `MEETING_ID` | Meeting identifier for data directory |
+| `MEETING_DATA_DIR` | Host path for meeting data persistence |
+
+## Recent Fixes
+
+- **`getActiveSpeakers` crash fix**: Wrapped in try/catch with optional chaining to prevent transcript pipeline failures
+- **"Getting ready" detection**: `meet-joiner.js` now detects the "getting ready" state to avoid clicking dialogs during admission wait
+- **Debug logging**: Added visibility into button detection during join flow
+
 ## License
 
 [MIT](../LICENSE)

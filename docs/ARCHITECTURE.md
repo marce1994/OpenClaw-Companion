@@ -75,6 +75,8 @@ System architecture and protocol specification for the OpenClaw Companion voice 
 | `kokoro-tts` | `kokoro-fastapi` | `ghcr.io/remsky/kokoro-fastapi:latest-gpu` | 5004→8880 | Yes (optional) | ~330ms latency, OpenAI-compatible `/v1/audio/speech` API |
 | `meet-bot` | `meet-bot` | Build `./meet-bot` | 3300 (host network) | No | Profile: `meet`. Puppeteer + PulseAudio + Live2D |
 | `diarizer` | Build `./diarizer` | — | 3202 | Yes | Profile: `diarizer`. Pyannote-based speaker diarization |
+| `summary-worker` | Build `./summary-worker` | — | — | No | Ephemeral. Launched by orchestrator after meeting ends. Checks relevance → diarizes → summarizes → sends to Telegram → ingests into Cognee |
+| `whisperx` | Build `./whisperx` | — | 8088 | Yes | Ephemeral GPU container. WhisperX + pyannote diarization. Launched by summary-worker for speaker-attributed transcription |
 
 ### whisper-fast Server
 
@@ -84,6 +86,38 @@ Custom minimal Python HTTP server (`whisper-server/server.py`) that replaces the
 - Language restriction to ES/EN only (auto-detect within those two)
 - No FastAPI/Gradio/Swagger overhead — plain `http.server` for minimal latency
 - Model: `Systran/faster-whisper-large-v3-turbo` cached locally, `HF_HUB_OFFLINE=1`
+
+## Post-Meeting Summary Pipeline
+
+When a meeting ends (meet-bot container exits), the orchestrator triggers the summary worker:
+
+```
+Meet Bot exits → Orchestrator detects exit → Launches summary-worker container
+                                                      │
+                                              ┌───────┴────────┐
+                                              │ Summary Worker  │
+                                              │                 │
+                                              │ 1. Read transcripts.json
+                                              │ 2. Relevance check (Gemini Flash)
+                                              │ 3. Merge audio chunks
+                                              │ 4. Launch WhisperX container
+                                              │    └─► Diarized transcription
+                                              │ 5. Map speakers to participants
+                                              │ 6. Generate summary (Gemini Flash)
+                                              │ 7. Send to Telegram
+                                              │ 8. Save as markdown
+                                              │ 9. Ingest into Cognee
+                                              └────────────────┘
+```
+
+**Meeting data directory** (`/tmp/meetings/<meeting-id>/`):
+- `transcripts.json` — real-time transcripts from meet-bot
+- `participants.json` — participant list with join times
+- `audio-chunks/` — raw audio chunks from meeting capture
+- `audio.wav` — merged audio (created by worker)
+- `summary.md` — generated summary
+
+**Configuration:** `server/summary-config.json` (see `summary-config.example.json` for template). Contains API keys for OpenRouter, Telegram, HuggingFace, and Cognee.
 
 ## Device Capabilities
 

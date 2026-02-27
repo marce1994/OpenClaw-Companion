@@ -21,8 +21,10 @@ const config = {
   calendarIcsUrl: process.env.GOOGLE_CALENDAR_ICS || '',
   calendarRefreshHours: parseInt(process.env.CALENDAR_REFRESH_HOURS || '6', 10),
   calendarJoinBeforeSec: parseInt(process.env.CALENDAR_JOIN_BEFORE_SEC || '60', 10),
-  // Audio recording for debug
-  recordAudio: process.env.RECORD_AUDIO === 'true',
+  // Audio recording (always on for post-meeting summary)
+  recordAudio: process.env.RECORD_AUDIO !== 'false', // ON by default
+  // Auto-leave after N minutes without transcriptions
+  silenceAutoLeaveMins: parseInt(process.env.SILENCE_AUTO_LEAVE_MINS || '5', 10),
   // VAD
   vadThreshold: parseFloat(process.env.VAD_THRESHOLD || '0.01'),
   vadChunkMs: parseInt(process.env.VAD_CHUNK_MS || '1500', 10),

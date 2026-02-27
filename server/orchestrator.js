@@ -115,14 +115,20 @@ class MeetOrchestrator {
     const containerName = `meet-bot-${meetingId}`;
 
     try {
+      // Shared meetings directory for data exchange with summary-worker
+      const meetingsHostDir = process.env.MEETINGS_HOST_DIR || '/tmp/meetings';
+
       // Create container
       const container = await this.docker.createContainer({
-        Image: 'meet-bot:v7',
+        Image: process.env.MEET_BOT_IMAGE || 'meet-bot:v8',
         name: containerName,
         Hostname: containerName,
         HostConfig: {
           NetworkMode: 'host',
           AutoRemove: false,
+          Binds: [
+            `${meetingsHostDir}:/data/meetings`,
+          ],
         },
         Labels: {
           'openclaw.companion.meeting': meetingId,
@@ -137,6 +143,8 @@ class MeetOrchestrator {
           `WHISPER_URL=http://127.0.0.1:9000`,
           `KOKORO_URL=http://127.0.0.1:5004`,
           `HAIKU_MODEL=anthropic/claude-haiku-4-5`,
+          `MEETINGS_DIR=/data/meetings`,
+          `RECORD_AUDIO=true`,
         ],
       });
 
@@ -323,7 +331,7 @@ class MeetOrchestrator {
   }
 
   /**
-   * Destroy a meeting: stop container, clean up state
+   * Destroy a meeting: stop container, launch summary worker, clean up state
    */
   async _destroyMeeting(meetingId, reason = 'Unknown') {
     const meeting = this.meetings.get(meetingId);
@@ -354,6 +362,80 @@ class MeetOrchestrator {
 
     this.meetings.delete(meetingId);
     console.log(`🛑 Meeting ${meetingId} destroyed: ${reason}`);
+
+    // Launch summary-worker (fire and forget)
+    this._launchSummaryWorker(meetingId, meeting).catch(err => {
+      console.error(`⚠️ Failed to launch summary worker for ${meetingId}: ${err.message}`);
+    });
+  }
+
+  /**
+   * Launch ephemeral summary-worker container for post-meeting processing.
+   * The worker handles: WhisperX diarization → AI summary → Telegram → Cognee.
+   */
+  async _launchSummaryWorker(meetingId, meeting) {
+    // Load summary config (fallback for env vars not set on voice-server)
+    let cfg = {};
+    try {
+      const fs = require('fs');
+      const cfgPath = require('path').join(__dirname, 'summary-config.json');
+      if (fs.existsSync(cfgPath)) {
+        cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      }
+    } catch (_) {}
+
+    const meetId = this._extractMeetId(meeting.meetUrl);
+    const dataDir = process.env.MEETINGS_HOST_DIR || cfg.meetings_host_dir || '/tmp/meetings';
+    const meetingDataDir = `${dataDir}/${meetId}`;
+    const memoryDir = process.env.MEMORY_HOST_DIR || cfg.memory_host_dir || '/home/node/.openclaw/workspace/memory';
+    const containerName = `summary-worker-${meetingId}`;
+
+    console.log(`📝 Launching summary-worker for meeting ${meetingId} (${meetId})`);
+
+    try {
+      const container = await this.docker.createContainer({
+        Image: 'summary-worker:latest',
+        name: containerName,
+        HostConfig: {
+          NetworkMode: 'host',
+          AutoRemove: true,
+          Binds: [
+            `${meetingDataDir}:/data`,
+            `${memoryDir}:/memory`,
+            '/var/run/docker.sock:/var/run/docker.sock',
+          ],
+        },
+        Labels: {
+          'openclaw.companion.role': 'summary-worker',
+          'openclaw.companion.meeting': meetingId,
+        },
+        Env: [
+          `MEETING_ID=${meetId}`,
+          `MEETING_DATA_DIR=/data`,
+          `MEMORY_DIR=/memory`,
+          `OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY || cfg.openrouter_api_key || ''}`,
+          `TELEGRAM_BOT_TOKEN=${process.env.TELEGRAM_BOT_TOKEN || cfg.telegram_bot_token || ''}`,
+          `TELEGRAM_CHAT_ID=${process.env.TELEGRAM_CHAT_ID || cfg.telegram_chat_id || ''}`,
+          `COGNEE_URL=${process.env.COGNEE_URL || cfg.cognee_url || 'http://172.17.0.1:8000'}`,
+          `COGNEE_USER=${process.env.COGNEE_USER || cfg.cognee_user || 'jarvis@openclaw.dev'}`,
+          `COGNEE_PASSWORD=${process.env.COGNEE_PASSWORD || cfg.cognee_password || ''}`,
+          `WHISPERX_IMAGE=${process.env.WHISPERX_IMAGE || cfg.whisperx_image || 'whisperx-api:latest'}`,
+          `HF_TOKEN=${process.env.HF_TOKEN || cfg.hf_token || ''}`,
+          `DOCKER_SOCKET=/var/run/docker.sock`,
+        ],
+      });
+
+      await container.start();
+      console.log(`📝 Summary worker started: ${containerName}`);
+    } catch (err) {
+      console.error(`❌ Summary worker launch failed: ${err.message}`);
+    }
+  }
+
+  _extractMeetId(link) {
+    if (!link) return 'unknown';
+    const match = link.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
+    return match ? match[1] : 'unknown';
   }
 
   /**

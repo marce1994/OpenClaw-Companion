@@ -14,5 +14,8 @@ server/node_modules/
 
 # Environment (keep .env.example)
 .env
+
+# Server config with secrets (use summary-config.example.json as template)
+server/summary-config.json
 web/node_modules/
 web/dist/

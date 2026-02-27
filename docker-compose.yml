@@ -46,6 +46,7 @@ services:
     volumes:
       - speaker-data:/data/speakers
       - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/meetings:/tmp/meetings
     depends_on:
       whisper-fast:
         condition: service_started

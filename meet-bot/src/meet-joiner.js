@@ -428,6 +428,12 @@ class MeetJoiner extends EventEmitter {
           return 'denied';
         }
         
+        // If we're in the "waiting for host" state, don't click anything — just wait
+        if (body.includes('getting ready') || body.includes('you\'ll be able to join') ||
+            body.includes('preparando') || body.includes('podrás unirte')) {
+          return 'waiting';
+        }
+
         // Check for blocking dialogs (Gemini notes, etc.) and click through them
         const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
         // Only dismiss non-join dialogs (tips, notifications)
@@ -448,12 +454,17 @@ class MeetJoiner extends EventEmitter {
             }
           }
         }
+        // Log all visible buttons for debugging
+        const allBtnTexts = buttons.map(b => b.textContent.toLowerCase().trim()).filter(t => t.length > 0 && t.length < 50);
+        if (allBtnTexts.length > 0) {
+          console.log('[MeetBot] Visible buttons:', JSON.stringify(allBtnTexts));
+        }
         for (const btn of buttons) {
           const text = btn.textContent.toLowerCase().trim();
           if (skipTexts.some(t => text.includes(t))) continue;
           if (acceptTexts.some(t => text === t || text.includes(t))) {
+            console.log('[MeetBot] About to click dialog button: "' + text + '"');
             btn.click();
-            console.log('[MeetBot] Auto-clicked dialog: ' + text);
             return 'clicked-dialog';
           }
         }
@@ -599,6 +610,39 @@ class MeetJoiner extends EventEmitter {
       }
     } catch (e) { /* ignore */ }
     return false;
+  }
+
+  /**
+   * Get list of participant names currently in the meeting.
+   */
+  async getParticipantNames() {
+    if (!this.page) return [];
+    try {
+      return await this.page.evaluate(() => {
+        const names = new Set();
+        // Method 1: data-self-name (own name)
+        document.querySelectorAll('[data-self-name]').forEach(el => {
+          const name = el.getAttribute('data-self-name');
+          if (name) names.add(name);
+        });
+        // Method 2: participant tiles with names
+        document.querySelectorAll('[data-participant-id]').forEach(el => {
+          const nameEl = el.querySelector('[data-tooltip]') || el.querySelector('[aria-label]');
+          if (nameEl) {
+            const name = nameEl.getAttribute('data-tooltip') || nameEl.getAttribute('aria-label');
+            if (name && name.length > 1 && name.length < 50) names.add(name);
+          }
+        });
+        // Method 3: video tile names
+        document.querySelectorAll('.zWGUib, .XEazBc').forEach(el => {
+          const text = el.textContent?.trim();
+          if (text && text.length > 1 && text.length < 50) names.add(text);
+        });
+        return [...names];
+      });
+    } catch (e) {
+      return [];
+    }
   }
 
   _sleep(ms) {
