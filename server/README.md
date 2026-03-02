@@ -552,6 +552,6 @@ cp summary-config.example.json summary-config.json
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MEETINGS_HOST_DIR` | `/tmp/meetings` | **Host** path for meeting data persistence (must be a real host path, not container path) |
-| `MEET_BOT_IMAGE` | `meet-bot:v8` | Docker image for meet bot workers |
+| `MEET_BOT_IMAGE` | `meet-bot:latest` | Docker image for meet bot workers |
 
 > ⚠️ `MEETINGS_HOST_DIR` must be a path on the Docker **host**, not inside a container. The orchestrator passes this to `docker run` as a bind mount.

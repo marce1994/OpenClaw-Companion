@@ -1109,7 +1109,6 @@ async function handleTextMessage(ws, text, prefix) {
           }
         } catch (e) {
           console.error(`❌ TTS ${idx}:`, e.message);
-          logActivity('error', `TTS generation failed: ${e.message}`, 'error');
         }
       })();
       sentencePromises.push(ttsPromise);
@@ -1117,7 +1116,6 @@ async function handleTextMessage(ws, text, prefix) {
     async (fullResponse, error) => {
       if (error && !ac.signal.aborted) {
         console.error('❌ Stream error:', error.message);
-        logActivity('error', `Stream error: ${error.message}`, 'error');
         send(ws, { type: 'error', message: error.message });
       }
 
@@ -1208,7 +1206,6 @@ function handleMultimodalMessage(ws, messages, logPrefix, userContentForHistory)
           }
         } catch (e) {
           console.error(`❌ TTS ${idx}:`, e.message);
-          logActivity('error', `TTS generation failed: ${e.message}`, 'error');
         }
       })();
       sentencePromises.push(ttsPromise);
@@ -1216,7 +1213,6 @@ function handleMultimodalMessage(ws, messages, logPrefix, userContentForHistory)
     async (fullResponse, error) => {
       if (error && !ac.signal.aborted) {
         console.error('❌ Stream error:', error.message);
-        logActivity('error', `Multimodal stream error: ${error.message}`, 'error');
         send(ws, { type: 'error', message: error.message });
       }
 
@@ -1606,9 +1602,8 @@ function getActiveClient() {
   return null;
 }
 
-// ─── Activity Logger (Ring Buffer) ─────────────────────────────────────────
+// ─── Dashboard Generator ───────────────────────────────────────────────────
 
-/** Global activity log: last 20 significant events */
 const activityLog = [];
 const ACTIVITY_LOG_SIZE = 20;
 
@@ -1841,39 +1836,8 @@ const requestHandler = (req, res) => {
   }
 
   if (req.url === '/health') {
-    setCors();
-    const uptime = process.uptime();
-    const memUsage = process.memoryUsage();
-    const status = orchestrator.getStatus();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: Math.floor(uptime),
-      memory: {
-        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
-        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
-      },
-      websockets: {
-        connected: wss.clients.size,
-      },
-      gateway: {
-        websocket: gwConnected ? 'connected' : 'disconnected',
-        url: GATEWAY_WS_URL,
-      },
-      tts: {
-        engine: TTS_ENGINE,
-        kokoro_url: KOKORO_URL,
-      },
-      whisper: {
-        url: WHISPER_URL,
-      },
-      meetings: {
-        active: status.activeMeetings,
-        max: status.maxMeetings,
-      },
-    }));
-    return;
+    res.end('{"status":"ok"}');
   } else if (req.url === '/device/capabilities' && req.method === 'GET') {
     setCors();
     const client = getActiveClient();
@@ -1987,12 +1951,12 @@ const requestHandler = (req, res) => {
       // /meetings/dashboard endpoint
       setCors();
       (async () => {
-        const wsClientsCount = wss.clients.size;
+        const wsClientsCount = wss.clients.size + (wssSecure ? wssSecure.clients.size : 0);
         const speakerCount = await getSpeakerCount();
         const dashboardHtml = generateDashboardHtml(orchestrator, wsClientsCount, speakerCount);
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(dashboardHtml);
-      })();
+      })().catch(e => { res.writeHead(500); res.end(e.message); });
     } else {
       // /meetings/:id endpoint
       const meeting = orchestrator.getMeetingStatus(meetingId);
@@ -2043,7 +2007,7 @@ if (httpsServer) {
 
 function handleConnection(ws) {
   console.log('🔌 New WS connection');
-  logActivity('connected', `New WebSocket connection (total: ${wss.clients.size})`, 'info');
+  logActivity('connected', `New WebSocket connection`, 'info');
   ws._authenticated = false;
   const authTimer = setTimeout(() => { if (!ws._authenticated) ws.close(); }, 5000);
 
@@ -2242,7 +2206,6 @@ function handleConnection(ws) {
 
   ws.on('close', () => {
     clearTimeout(authTimer);
-    logActivity('disconnected', `WebSocket disconnected (total: ${wss.clients.size})`, 'info');
     // Reject all pending device commands
     if (ws._pendingCommands) {
       for (const [id, pending] of Object.entries(ws._pendingCommands)) {
@@ -2256,6 +2219,7 @@ function handleConnection(ws) {
       console.log(`🔌 WS disconnected (session ${ws._sessionId.slice(0, 8)} saved, ${ws._sendBuffer?.length || 0} msgs buffered)`);
     } else {
       console.log('🔌 WS disconnected');
+      logActivity('disconnected', `WebSocket disconnected`, 'info');
     }
   });
 }

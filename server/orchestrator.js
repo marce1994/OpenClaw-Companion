@@ -120,7 +120,7 @@ class MeetOrchestrator {
 
       // Create container
       const container = await this.docker.createContainer({
-        Image: process.env.MEET_BOT_IMAGE || 'meet-bot:v8',
+        Image: process.env.MEET_BOT_IMAGE || 'meet-bot:latest',
         name: containerName,
         Hostname: containerName,
         HostConfig: {

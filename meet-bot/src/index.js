@@ -160,12 +160,21 @@ async function endMeetingWithSummary() {
 meetJoiner.on('meeting-ended', async () => {
   console.log(LOG, 'Meeting ended — cleaning up');
   await endMeetingWithSummary();
+  // In orchestrator mode, exit so container dies and triggers summary-worker
+  if (process.env.MEETING_URL) {
+    console.log(LOG, 'Orchestrator mode — exiting after data export');
+    setTimeout(() => process.exit(0), 2000);
+  }
 });
 
 // Auto-leave when alone for 5 minutes
 meetJoiner.on('auto-leave', async () => {
   console.log(LOG, 'Auto-leaving (alone in meeting)');
   await endMeetingWithSummary();
+  if (process.env.MEETING_URL) {
+    console.log(LOG, 'Orchestrator mode — exiting after data export');
+    setTimeout(() => process.exit(0), 2000);
+  }
 });
 
 // Active speaker detection from Meet UI (blue border)
@@ -471,9 +480,12 @@ server.listen(config.meetPort, () => {
 async function shutdown(signal) {
   console.log(LOG, `${signal} received, shutting down...`);
   try {
-    await meetJoiner.leave();
-    await memory.endMeeting();
-  } catch (e) { /* ignore */ }
+    await endMeetingWithSummary();
+  } catch (e) {
+    console.error(LOG, 'Shutdown export error:', e.message);
+    // Fallback: at least try to end meeting
+    try { await memory.endMeeting(); } catch (_) {}
+  }
   server.close();
   process.exit(0);
 }
